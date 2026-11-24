@@ -1,0 +1,231 @@
+#!/bin/sh
+# OWRTPsiphon control helper. No Steer configuration is modified here.
+
+APP=/opt/owrt-psiphon
+BIN="$APP/warp-plus"
+CONFIG=owrt-psiphon.main
+BIND="$(uci -q get ${CONFIG}.bind || echo 192.168.1.1)"
+PORT="$(uci -q get ${CONFIG}.port || echo 8086)"
+COUNTRY="$(uci -q get ${CONFIG}.country || echo NL)"
+ENDPOINT="$(uci -q get ${CONFIG}.endpoint || echo 188.114.99.150:1701)"
+PIDFILE=/var/run/owrt-psiphon.pid
+SCANFILE=/var/run/owrt-psiphon-scan.json
+LOGFILE=/var/log/owrt-psiphon.log
+
+valid_country() {
+        case "$1" in NL|DE|BE|FR|GB|PL|CZ|AT|CH|US) return 0 ;; *) return 1 ;; esac
+}
+
+json_escape() {
+        printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'
+}
+
+managed_pid() {
+        if [ -s "$PIDFILE" ]; then
+                p="$(cat "$PIDFILE" 2>/dev/null)"
+                if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+                        echo "$p"
+                        return 0
+                fi
+        fi
+        return 1
+}
+
+warp_pids() {
+        pidof warp-plus 2>/dev/null
+}
+
+is_our_manual_process() {
+        p="$1"
+        [ -r "/proc/$p/cmdline" ] || return 1
+        cmd="$(tr '\000' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
+        case "$cmd" in
+                *"--cfon"*"${BIND}:${PORT}"*) return 0 ;;
+                *) return 1 ;;
+        esac
+}
+
+port_busy() {
+        netstat -lnt 2>/dev/null | grep -q ":${PORT}[[:space:]]"
+}
+
+status() {
+        running=false; managed=false; pid=""; manual=false
+        if p="$(managed_pid)"; then running=true; managed=true; pid="$p"; fi
+        if [ "$running" = false ]; then
+                for p in $(warp_pids); do
+                        if is_our_manual_process "$p"; then running=true; manual=true; pid="$p"; break; fi
+                done
+        fi
+        auto="$(uci -q get ${CONFIG}.auto || echo 0)"
+        version="unknown"
+        [ -x "$BIN" ] && version="$("$BIN" version 2>/dev/null | head -1 | tr -d '\r')"
+        exit_country=""; exit_ip=""; latency=""
+        if [ -s "$APP/last-probe" ]; then
+                exit_country="$(sed -n 's/^PROBE_COUNTRY=//p' "$APP/last-probe" | tr -d "'" | head -1)"
+                exit_ip="$(sed -n 's/^PROBE_IP=//p' "$APP/last-probe" | tr -d "'" | head -1)"
+                latency="$(sed -n 's/^PROBE_MS=//p' "$APP/last-probe" | tr -d "'" | head -1)"
+        fi
+        sub="socks5://${BIND}:${PORT}#OWRTPsiphon"
+        printf '{"ok":true,"installed":%s,"running":%s,"managed":%s,"manual":%s,"pid":"%s","country":"%s","bind":"%s","port":%s,"auto":%s,"version":"%s","subscription":"%s","exit_country":"%s","exit_ip":"%s","latency_ms":"%s"}\n' \
+                "$([ -x "$BIN" ] && echo true || echo false)" "$running" "$managed" "$manual" "$pid" \
+                "$(json_escape "$COUNTRY")" "$(json_escape "$BIND")" "$PORT" "$([ "$auto" = 1 ] && echo true || echo false)" \
+                "$(json_escape "$version")" "$(json_escape "$sub")" "$(json_escape "$exit_country")" "$(json_escape "$exit_ip")" "$(json_escape "$latency")"
+}
+
+reply() { printf '{"ok":%s,"message":"%s"}\n' "$1" "$(json_escape "$2")"; }
+
+start_service() {
+        if managed_pid >/dev/null; then reply true 'Уже запущен под procd'; return 0; fi
+        if port_busy; then reply false 'Порт 8086 занят. Если это текущий ручной Psiphon, нажмите «Перенять текущий туннель».'; return 1; fi
+        /etc/init.d/owrt-psiphon enable >/dev/null 2>&1
+        /etc/init.d/owrt-psiphon start >/dev/null 2>&1
+        sleep 2
+        if managed_pid >/dev/null; then reply true 'Служба запущена'; else reply false 'Служба не запустилась. Проверьте системный журнал.'; return 1; fi
+}
+
+stop_service() {
+        /etc/init.d/owrt-psiphon stop >/dev/null 2>&1
+        /etc/init.d/owrt-psiphon disable >/dev/null 2>&1
+        rm -f "$PIDFILE"
+        reply true 'Служба остановлена'
+}
+
+adopt_service() {
+        found=""
+        for p in $(warp_pids); do
+                if is_our_manual_process "$p"; then found="$p"; break; fi
+        done
+        if [ -z "$found" ]; then reply false 'Не найден ручной warp-plus с Psiphon на заданном порту'; return 1; fi
+        kill "$found" 2>/dev/null
+        n=0
+        while kill -0 "$found" 2>/dev/null && [ "$n" -lt 10 ]; do sleep 1; n=$((n+1)); done
+        if kill -0 "$found" 2>/dev/null; then kill -9 "$found" 2>/dev/null; fi
+        sleep 1
+        start_service
+}
+
+set_country() {
+        c="$1"
+        valid_country "$c" || { reply false 'Недопустимая страна'; return 1; }
+        if [ -n "$(managed_pid)" ]; then
+                uci set ${CONFIG}.country="$c" && uci commit owrt-psiphon
+                /etc/init.d/owrt-psiphon restart >/dev/null 2>&1
+                sleep 2
+                reply true "Страна изменена на $c; туннель перезапущен"
+        elif port_busy; then
+                reply false 'Сначала перенесите текущий ручной туннель под управление OWRTPsiphon'
+                return 1
+        else
+                uci set ${CONFIG}.country="$c" && uci commit owrt-psiphon
+                reply true "Выбрана страна $c. Нажмите «Запустить»"
+        fi
+}
+
+probe() {
+        out="$(curl -4 -fsS --max-time 15 --socks5-hostname "${BIND}:${PORT}" -w '\n%{time_total}' https://ipinfo.io/json 2>/dev/null)" || {
+                reply false 'Проверка через SOCKS не прошла'; return 1;
+        }
+        body="$(printf '%s' "$out" | sed '$d')"
+        secs="$(printf '%s' "$out" | tail -1)"
+        cc="$(printf '%s' "$body" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        ip="$(printf '%s' "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
+        umask 077
+        printf "PROBE_COUNTRY='%s'\nPROBE_IP='%s'\nPROBE_MS='%s'\n" "$cc" "$ip" "$ms" > "$APP/last-probe"
+        reply true "Выход: ${cc:-?}, IP ${ip:-?}, ${ms} мс"
+}
+
+scan_status() {
+        [ -s "$SCANFILE" ] && cat "$SCANFILE" || echo '{"running":false,"message":"Проверка ещё не запускалась"}'
+}
+
+scan_start() {
+        [ -x "$BIN" ] || { reply false 'Бинарник warp-plus не установлен'; return 1; }
+        if [ -s /var/run/owrt-psiphon-scan.pid ] && kill -0 "$(cat /var/run/owrt-psiphon-scan.pid)" 2>/dev/null; then
+                reply false 'Проверка уже выполняется'; return 1
+        fi
+        if port_busy && ! managed_pid >/dev/null; then
+                reply false 'Сначала перенесите текущий ручной туннель под управление OWRTPsiphon'; return 1
+        fi
+        "$0" _scan >/dev/null 2>&1 &
+        echo $! > /var/run/owrt-psiphon-scan.pid
+        reply true 'Проверка десяти стран запущена в фоне'
+}
+
+scan_worker() {
+        countries='NL DE BE FR GB PL CZ AT CH US'
+        was_running=0
+        old_country="$COUNTRY"
+        if managed_pid >/dev/null; then was_running=1; fi
+        if netstat -lnt 2>/dev/null | grep -q ':18086[[:space:]]'; then
+                printf '{"running":false,"message":"Порт 18086 занят другим процессом","results":[]}' > "$SCANFILE"
+                rm -f /var/run/owrt-psiphon-scan.pid
+                return 1
+        fi
+        best_country=""; best_ms=999999; results='[]'
+        printf '{"running":true,"current":"","best":"","best_ms":null,"results":[]}' > "$SCANFILE"
+        for c in $countries; do
+                printf '{"running":true,"current":"%s","best":"%s","best_ms":%s,"results":%s}' "$c" "$best_country" "$([ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms")" "$results" > "$SCANFILE"
+                pfile="/var/run/owrt-psiphon-probe-${c}.pid"
+                if [ -n "$ENDPOINT" ]; then
+                        "$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" --test-url https://ipinfo.io/country > "$APP/scan-${c}.log" 2>&1 &
+                else
+                        "$BIN" -4 --cfon --country "$c" -b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" --test-url https://ipinfo.io/country > "$APP/scan-${c}.log" 2>&1 &
+                fi
+                probe_pid=$!; echo "$probe_pid" > "$pfile"
+                result=""; elapsed=""; got=""; ip=""; ms=""; state="timeout"
+                n=0
+                while [ "$n" -lt 18 ]; do
+                        sleep 2
+                        if ! kill -0 "$probe_pid" 2>/dev/null; then break; fi
+                        result="$(curl -4 -fsS --max-time 5 --socks5-hostname 127.0.0.1:18086 -w '\n%{time_total}' https://ipinfo.io/json 2>/dev/null)" && break
+                        n=$((n+1))
+                done
+                if [ -n "$result" ]; then
+                        body="$(printf '%s' "$result" | sed '$d')"
+                        secs="$(printf '%s' "$result" | tail -1)"
+                        got="$(printf '%s' "$body" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+                        ip="$(printf '%s' "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+                        ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
+                        if [ "$got" = "$c" ]; then
+                                state="ok"
+                                if [ "$ms" -lt "$best_ms" ]; then best_ms="$ms"; best_country="$c"; fi
+                        else
+                                state="mismatch"
+                        fi
+                fi
+                entry="{\"country\":\"$c\",\"exit_country\":\"${got:-}\",\"ip\":\"${ip:-}\",\"latency_ms\":${ms:-null},\"state\":\"$state\"}"
+                if [ "$results" = '[]' ]; then results="[$entry]"; else results="${results%]},$entry]"; fi
+                printf '{"running":true,"current":"%s","best":"%s","best_ms":%s,"results":%s}' "$c" "$best_country" "$([ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms")" "$results" > "$SCANFILE"
+                kill "$probe_pid" 2>/dev/null
+                sleep 1
+                rm -f "$pfile"
+        done
+        if [ -n "$best_country" ]; then
+                uci set ${CONFIG}.country="$best_country" && uci commit owrt-psiphon
+                if [ "$was_running" -eq 1 ] && [ "$best_country" != "$old_country" ]; then
+                        /etc/init.d/owrt-psiphon restart >/dev/null 2>&1
+                        final_message="Лучший результат: $best_country, ${best_ms} мс. Туннель переключён."
+                else
+                        final_message="Лучший результат: $best_country, ${best_ms} мс."
+                fi
+                printf '{"running":false,"current":"","best":"%s","best_ms":%s,"message":"%s","results":%s}' "$best_country" "$best_ms" "$final_message" "$results" > "$SCANFILE"
+        else
+                printf '{"running":false,"current":"","best":"","best_ms":null,"message":"Не удалось получить подтверждённый результат ни для одной страны","results":%s}' "$results" > "$SCANFILE"
+        fi
+        rm -f /var/run/owrt-psiphon-scan.pid
+}
+
+case "$1" in
+        status) status ;;
+        start) start_service ;;
+        stop) stop_service ;;
+        adopt) adopt_service ;;
+        set_country) set_country "$2" ;;
+        probe) probe ;;
+        scan) scan_start ;;
+        scan_status) scan_status ;;
+        _scan) scan_worker ;;
+        *) reply false 'Неизвестная команда'; exit 1 ;;
+esac
