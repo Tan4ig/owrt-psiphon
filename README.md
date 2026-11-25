@@ -17,10 +17,12 @@
 Run one of the following commands via SSH on your OpenWrt router:
 
 Using `curl`:
-curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
+
+    curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
 
 Using `wget` (if `curl` is not installed):
-wget -O /tmp/owrt-install.sh "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" && sh /tmp/owrt-install.sh
+
+    wget -O /tmp/owrt-install.sh "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" && sh /tmp/owrt-install.sh
 
 After installation, open **Services → OWRTPsiphon** in LuCI. 
 To use with **Steer**, paste `socks5://192.168.1.1:8086#OWRTPsiphon` into **Steer → VPN → Subscription → Custom Servers**.
