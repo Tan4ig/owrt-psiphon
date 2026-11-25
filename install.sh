@@ -1,9 +1,9 @@
 #!/bin/sh
-# VERSION=0.3.4
-# OWRTPsiphon Alpha 3.4 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.3.6
+# OWRTPsiphon Alpha 3.6 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
 set -eu
 
-APP_VER="0.3.4"
+APP_VER="0.3.6"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install"
 VERSION="1.2.6"
@@ -127,7 +127,7 @@ status() {
 		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"; latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 	fi
 	version="v$(cat "$APP/warp.version" 2>/dev/null | tr -d '\r\n' || echo "1.2.6")"
-	app_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.4)"
+	app_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.6)"
 	autostart="$(uci -q get ${CONFIG}.autostart || echo 1)"; auto_scan_boot="$(uci -q get ${CONFIG}.auto_scan_boot || echo 0)"; watchdog_hours="$(uci -q get ${CONFIG}.watchdog_hours || echo 0)"
 	sub="socks5://${BIND}:${PORT}#OWRTPsiphon"
 	printf '{"ok":true,"running":%s,"listening":%s,"socks_ok":%s,"pid":"%s","country":"%s","bind":"%s","port":%s,"version":"%s","app_version":"%s","subscription":"%s","exit_country":"%s","exit_ip":"%s","latency_ms":"%s","autostart":%s,"auto_scan_boot":%s,"watchdog_hours":%s,"scan_running":%s}\n' \
@@ -135,7 +135,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.4)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.6)"
 	remote_head="$(curl -fsSL --max-time 8 "$REPO_URL" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -257,8 +257,13 @@ case "$1" in
 	call) read -r input || input="{}"
 		case "$2" in
 			status|start|stop|probe|scan|scan_status|check_update|check_warp_update|apply_update|apply_warp_update|uninstall) "$CTL" "$2" ;;
-			set_country) "$CTL" set_country "$(printf '%s' "$input" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" ;;
-			set_auto) "$CTL" set_auto "$(printf '%s' "$input" | sed -n 's/.*"autostart"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" "$(printf '%s' "$input" | sed -n 's/.*"auto_scan_boot"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" "$(printf '%s' "$input" | sed -n 's/.*"watchdog_hours"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" ;;
+			set_country) "$CTL" set_country "$(echo "$input" | grep -o '"country":"[^"]*"' | cut -d'"' -f4)" ;;
+			set_auto) 
+				as=$(echo "$input" | grep -o '"autostart":[0-9]*' | cut -d: -f2)
+				sb=$(echo "$input" | grep -o '"auto_scan_boot":[0-9]*' | cut -d: -f2)
+				wh=$(echo "$input" | grep -o '"watchdog_hours":[0-9]*' | cut -d: -f2)
+				"$CTL" set_auto "$as" "$sb" "$wh" 
+				;;
 			*) printf '{"ok":false,"message":"Unknown method"}\n' ;;
 		esac ;;
 esac
@@ -276,8 +281,15 @@ return view.extend({
 	render: function() {
 		var status = {}, scan = {}, pollActive = false, switching = false, sub = 'socks5://192.168.1.1:8086#OWRTPsiphon';
 		var root = E('div', { 'class': 'cbi-map' });
-		var chkAutostart = E('input', { 'type': 'checkbox' }), chkScanBoot = E('input', { 'type': 'checkbox' });
-		var selWatchdog = E('select', { 'class': 'cbi-input-select' }, [E('option', { 'value': '0' }, 'Отключена'), E('option', { 'value': '1' }, 'Раз в 1 час'), E('option', { 'value': '6' }, 'Раз в 6 часов'), E('option', { 'value': '12' }, 'Раз в 12 часов'), E('option', { 'value': '24' }, 'Раз в 24 часа')]);
+		var chkAutostart = E('input', { 'type': 'checkbox' });
+		var selWatchdog = E('select', { 'class': 'cbi-input-select' }, [
+			E('option', { 'value': '0' }, 'Отключена'), 
+			E('option', { 'value': 'boot' }, 'При перезагрузке'), 
+			E('option', { 'value': '1' }, 'Раз в 1 час'), 
+			E('option', { 'value': '6' }, 'Раз в 6 часов'), 
+			E('option', { 'value': '12' }, 'Раз в 12 часов'), 
+			E('option', { 'value': '24' }, 'Раз в 24 часа')
+		]);
 		function notify(m, t) { ui.addNotification(null, E('p', {}, m), t || 'info'); }
 		function copyText(txt) { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(function() { notify('Скопировано: ' + txt); }); else { var ta = E('textarea', { 'style': 'position:fixed;opacity:0' }, txt); document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); notify('Скопировано: ' + txt); } }
 		
@@ -315,9 +327,20 @@ return view.extend({
 		function updateStatus() {
 			return Promise.all([ callStatus(), callScanStatus() ]).then(function(v) {
 				status = v[0] || {}; scan = v[1] || {}; sub = status.subscription || sub;
-				chkAutostart.checked = String(status.autostart) === '1';
-				chkScanBoot.checked = String(status.auto_scan_boot) === '1';
-				selWatchdog.value = String(status.watchdog_hours || 0);
+				
+				if (status.app_version && status.app_version !== '0.3.6') {
+					window.location.reload(true);
+					return;
+				}
+
+				chkAutostart.checked = (status.autostart == 1);
+				
+				// Логика объединенного выпадающего списка
+				if (status.auto_scan_boot == 1 && status.watchdog_hours == 0) {
+					selWatchdog.value = 'boot';
+				} else {
+					selWatchdog.value = String(status.watchdog_hours || 0);
+				}
 
 				var wp = status.running ? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Запущен') : E('span', { 'style': 'color:#dc2626;font-weight:bold' }, 'Остановлен');
 				var sk = status.socks_ok ? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Активен (' + status.bind + ':' + status.port + ')') : (status.listening ? E('span', { 'style': 'color:#d97706;font-weight:bold' }, 'Нет ответа') : E('span', { 'style': 'color:#dc2626' }, 'Не запущен'));
@@ -346,8 +369,15 @@ return view.extend({
 		function pollScan() { if (pollActive || !scan.running) return; pollActive = true; function tick() { updateStatus().then(function() { if (scan.running) window.setTimeout(tick, 4000); else pollActive = false; }).catch(function() { pollActive = false; }); } window.setTimeout(tick, 2500); }
 		function action(p, okMsg) { p.then(function(r) { notify((r && r.message) || okMsg, (r && r.ok) ? 'info' : 'error'); return updateStatus(); }).then(function() { pollScan(); }).catch(function(e) { notify('Ошибка RPC: ' + e, 'error'); }); }
 		function btn(l, c, fn) { return E('button', { 'class': 'btn ' + c, 'click': fn, 'style': 'margin:4px 0;' }, l); }
-		function saveAuto() { action(callSetAuto(chkAutostart.checked ? 1 : 0, chkScanBoot.checked ? 1 : 0, parseInt(selWatchdog.value, 10) || 0), 'Настройки сохранены'); }
-		chkAutostart.addEventListener('change', saveAuto); chkScanBoot.addEventListener('change', saveAuto); selWatchdog.addEventListener('change', saveAuto);
+		
+		function saveAuto() { 
+			var val = selWatchdog.value;
+			var scanBoot = (val === 'boot') ? 1 : 0;
+			var hours = (val === 'boot') ? 0 : parseInt(val, 10);
+			action(callSetAuto(chkAutostart.checked ? 1 : 0, scanBoot, hours), 'Настройки сохранены'); 
+		}
+		
+		chkAutostart.addEventListener('change', saveAuto); selWatchdog.addEventListener('change', saveAuto);
 
 		root.appendChild(E('h2', {}, 'OWRTPsiphon')); 
 		root.appendChild(E('p', { 'class': 'cbi-map-descr' }, 'Управление Psiphon (bepass-org/warp-plus --cfon) для Steer без изменения сетевой конфигурации.')); 
@@ -357,8 +387,13 @@ return view.extend({
 		root.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, 'Автоматизация и контроль узлов'), 
 			E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Автостарт службы при загрузке'), E('div', { 'class': 'cbi-value-field' }, chkAutostart)]), 
-			E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Автоподбор страны при включении'), E('div', { 'class': 'cbi-value-field' }, chkScanBoot)]), 
-			E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Проверка и переход на лучший'), E('div', { 'class': 'cbi-value-field' }, [selWatchdog, E('div', { 'class': 'cbi-value-description', 'style': 'margin-top:4px;' }, 'При падении узла переключает на следующий рабочий по возрастанию пинга.')])])
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, 'Проверка и переход на лучший'), 
+				E('div', { 'class': 'cbi-value-field' }, [
+					selWatchdog, 
+					E('div', { 'class': 'cbi-value-description', 'style': 'margin-top:4px;' }, 'При падении узла переключает на следующий рабочий по возрастанию пинга.')
+				])
+			])
 		]));
 
 		root.appendChild(E('div', { 'class': 'cbi-section' }, [
@@ -372,7 +407,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, 'Версия OWRTPsiphon'), 
 				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:12px; align-items:center;' }, [
-					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, 'v' + (status.app_version || '0.3.4')), 
+					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, 'v' + (status.app_version || '0.3.6')), 
 					E('button', { 'class': 'btn cbi-button-action', 'style': 'margin:0;', 'click': function() { updateAppBox.textContent = 'Проверка GitHub...'; callCheckUpdate().then(function(r) { updateAppBox.innerHTML = ''; if (!r || !r.ok) { updateAppBox.textContent = (r && r.message) || 'Ошибка проверки'; return; } updateAppBox.appendChild(E('span', { 'style': 'margin-right:10px' }, r.message)); if (r.has_update) updateAppBox.appendChild(btn('Установить v' + r.remote_version, 'cbi-button-positive', function() { if (!confirm('Установить обновление v' + r.remote_version + '?')) return; callApplyUpdate().then(function(res) { notify((res && res.message) || 'Обновление...', 'info'); window.setTimeout(function() { window.location.reload(); }, 4500); }); })); }); } }, 'Проверить')
 				])
 			]),
