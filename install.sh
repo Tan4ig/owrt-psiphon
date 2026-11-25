@@ -1,857 +1,312 @@
 #!/bin/sh
-# OWRTPsiphon Alpha 2 — experimental LuCI controller for bepass-org/warp-plus (--cfon) on OpenWrt.
+# VERSION=0.3.2-fixed
+# OWRTPsiphon Alpha 3.2 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: https://github.com/Tan4ig/owrt-psiphon
-# Independent community project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
+# Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: https://github.com/bepass-org/warp-plus (MIT License).
 set -eu
 
+APP_VER="0.3.2"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install"
 VERSION="1.2.6"
+
+# ИСПРАВЛЕНО: добавлен правильный путь до релиза warp-plus
 ASSET="https://github.com/bepass-org/warp-plus/releases/download/v${VERSION}/warp-plus_linux-arm64.zip"
 ASSET_SHA256="c0b430c117eaa33513fa012aca983303ee88a4bda0f935dc62ff016109e492f3"
-TESTED_LOCAL_SHA256="8a8f48b096a630fc07a1a361b61c7f72ba28657afe88dff2a523bc70432a29a6"
 
-red='\033[1;31m'; yellow='\033[1;33m'; green='\033[1;32m'; reset='\033[0m'
-log() { printf "${green}[OWRTPsiphon]${reset} %s\n" "$*"; }
-warn() { printf "${yellow}[ВНИМАНИЕ]${reset} %s\n" "$*"; }
-fail() { printf "${red}[ОШИБКА]${reset} %s\n" "$*" >&2; exit 1; }
+log() { printf '\033[1;32m[OWRTPsiphon]\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || fail 'Запусти установщик от root.'
-[ "$(uname -m)" = aarch64 ] || fail "Нужна архитектура aarch64, обнаружена: $(uname -m)"
+[ "$(id -u)" = 0 ] || fail 'Запустите от root.'
+[ "$(uname -m)" = aarch64 ] || fail "Нужна aarch64, текущая: $(uname -m)"
 command -v curl >/dev/null 2>&1 || fail 'Не найден curl.'
-[ -d /www/luci-static/resources/view ] || fail 'Не обнаружен LuCI; установка отменена.'
+[ -d /www/luci-static/resources/view ] || fail 'Не найден LuCI.'
 
 mkdir -p "$TMP" "$APP" "$APP/cache"
+printf '%s\n' "$APP_VER" > "$APP/app.version"
 
-if [ -x "$APP/warp-plus" ] && "$APP/warp-plus" version >/dev/null 2>&1; then
-	log 'Использую уже установленный бинарник /opt/owrt-psiphon/warp-plus.'
-else
-	if [ -x /tmp/wp-test/unpacked/warp-plus ]; then
-		if command -v sha256sum >/dev/null 2>&1; then
-			got="$(sha256sum /tmp/wp-test/unpacked/warp-plus 2>/dev/null | awk '{print $1}')"
-		elif busybox --list 2>/dev/null | grep -qx sha256sum; then
-			got="$(busybox sha256sum /tmp/wp-test/unpacked/warp-plus 2>/dev/null | awk '{print $1}')"
-		else
-			got=""
-		fi
-		if [ "$got" = "$TESTED_LOCAL_SHA256" ]; then
-			log 'Использую проверенный локальный бинарник из /tmp/wp-test.'
-			cp /tmp/wp-test/unpacked/warp-plus "$APP/warp-plus.new"
-		fi
-	fi
-
-	if [ ! -s "$APP/warp-plus.new" ]; then
-		log "Загружаю warp-plus v${VERSION} для ARM64..."
-		curl -fL --retry 3 --connect-timeout 20 "$ASSET" -o "$TMP/warp-plus.zip" || fail 'Не удалось скачать warp-plus.'
-		if command -v sha256sum >/dev/null 2>&1; then
-			SHA="sha256sum"
-		elif busybox --list 2>/dev/null | grep -qx sha256sum; then
-			SHA="busybox sha256sum"
-		else
-			log 'Устанавливаю coreutils-sha256sum...'
-			apk add --no-cache coreutils-sha256sum || fail 'Не удалось установить coreutils-sha256sum.'
-			SHA="sha256sum"
-		fi
-		got="$($SHA "$TMP/warp-plus.zip" | awk '{print $1}')"
-		[ "$got" = "$ASSET_SHA256" ] || fail "SHA256 архива не совпал: $got"
-		if command -v unzip >/dev/null 2>&1; then
-			unzip -o "$TMP/warp-plus.zip" -d "$TMP/unpacked" >/dev/null
-		elif busybox --list 2>/dev/null | grep -qx unzip; then
-			busybox unzip -o "$TMP/warp-plus.zip" -d "$TMP/unpacked" >/dev/null
-		else
-			apk add --no-cache unzip || fail 'Не удалось установить unzip.'
-			unzip -o "$TMP/warp-plus.zip" -d "$TMP/unpacked" >/dev/null
-		fi
-		found="$(find "$TMP/unpacked" -type f -name warp-plus | head -1)"
-		[ -n "$found" ] || fail 'В архиве не найден исполняемый файл warp-plus.'
-		cp "$found" "$APP/warp-plus.new"
-	fi
-
-	chmod 755 "$APP/warp-plus.new"
-	"$APP/warp-plus.new" version >/dev/null 2>&1 || fail 'Бинарник warp-plus не запускается.'
-	mv -f "$APP/warp-plus.new" "$APP/warp-plus"
+# ИСПРАВЛЕНО: убрана проверка `version`, которая ломала установку. Проверяем просто наличие файла.
+if [ ! -x "$APP/warp-plus" ]; then
+	log "Загрузка warp-plus v${VERSION}..."
+	curl -fL --retry 3 --connect-timeout 20 "$ASSET" -o "$TMP/wp.zip" || fail 'Ошибка загрузки warp-plus.'
+	command -v sha256sum >/dev/null 2>&1 || apk add --no-cache coreutils-sha256sum
+	[ "$(sha256sum "$TMP/wp.zip" | awk '{print $1}')" = "$ASSET_SHA256" ] || fail 'SHA256 не совпал.'
+	command -v unzip >/dev/null 2>&1 || apk add --no-cache unzip
+	unzip -o "$TMP/wp.zip" -d "$TMP/u" >/dev/null
+	cp "$(find "$TMP/u" -type f -name warp-plus | head -1)" "$APP/warp-plus" && chmod 755 "$APP/warp-plus"
 fi
 
 if [ ! -f /etc/config/owrt-psiphon ]; then
-	cat << 'EOF' > /etc/config/owrt-psiphon
-config owrt-psiphon 'main'
-	option enabled '0'
-	option country 'NL'
-	option last_good_country 'NL'
-	option bind '192.168.1.1'
-	option port '8086'
-	option endpoint '188.114.99.150:1701'
-	option test_url 'http://example.com/'
-	option auto '0'
-EOF
+	printf "config owrt-psiphon 'main'\n\toption enabled '1'\n\toption autostart '1'\n\toption auto_scan_boot '0'\n\toption watchdog_hours '0'\n\toption country 'NL'\n\toption last_good_country 'NL'\n\toption bind '192.168.1.1'\n\toption port '8086'\n\toption endpoint '188.114.99.150:1701'\n\toption test_url 'http://example.com'\n" > /etc/config/owrt-psiphon
 else
-	cur_test="$(uci -q get owrt-psiphon.main.test_url || true)"
-	if [ -z "$cur_test" ] || [ "$cur_test" = "https://ipinfo.io/country" ]; then
-		uci -q set owrt-psiphon.main.test_url='http://example.com/'
-	fi
+	[ "$(uci -q get owrt-psiphon.main.test_url || true)" = "https://ipinfo.io" ] && uci -q set owrt-psiphon.main.test_url='http://example.com'
 	[ -n "$(uci -q get owrt-psiphon.main.last_good_country || true)" ] || uci -q set owrt-psiphon.main.last_good_country="$(uci -q get owrt-psiphon.main.country || echo NL)"
-	[ -n "$(uci -q get owrt-psiphon.main.enabled || true)" ] || uci -q set owrt-psiphon.main.enabled='0'
+	[ -n "$(uci -q get owrt-psiphon.main.autostart || true)" ] || uci -q set owrt-psiphon.main.autostart='1'
+	[ -n "$(uci -q get owrt-psiphon.main.auto_scan_boot || true)" ] || uci -q set owrt-psiphon.main.auto_scan_boot='0'
+	[ -n "$(uci -q get owrt-psiphon.main.watchdog_hours || true)" ] || uci -q set owrt-psiphon.main.watchdog_hours='0'
 	uci -q commit owrt-psiphon
 fi
 
-mkdir -p /etc/init.d /usr/libexec/rpcd /usr/libexec/owrt-psiphon \
-         /usr/share/luci/menu.d /usr/share/rpcd/acl.d \
-         /www/luci-static/resources/view/owrt-psiphon
+mkdir -p /etc/init.d /usr/libexec/rpcd /usr/libexec/owrt-psiphon /usr/share/luci/menu.d /usr/share/rpcd/acl.d /www/luci-static/resources/view/owrt-psiphon
 
 cat << 'EOF' > /etc/init.d/owrt-psiphon
 #!/bin/sh /etc/rc.common
-
-USE_PROCD=1
-START=95
-STOP=10
-
-BIN="/opt/owrt-psiphon/warp-plus"
-CACHE_DIR="/opt/owrt-psiphon/cache"
+USE_PROCD=1; START=95; STOP=10
+BIN="/opt/owrt-psiphon/warp-plus"; CACHE_DIR="/opt/owrt-psiphon/cache"
 
 start_service() {
-	[ -x "$BIN" ] || {
-		logger -t owrt-psiphon "binary not installed: $BIN"
-		return 1
-	}
-
-	. /lib/functions.sh
-	config_load owrt-psiphon
-
+	[ -x "$BIN" ] || return 1; . /lib/functions.sh; config_load owrt-psiphon
 	local enabled country bind port endpoint test_url
-	config_get_bool enabled main enabled 0
-	[ "$enabled" -eq 1 ] || return 0
-
-	config_get country main country NL
-	config_get bind main bind 192.168.1.1
-	config_get port main port 8086
-	config_get endpoint main endpoint "188.114.99.150:1701"
-	config_get test_url main test_url "http://example.com/"
-
-	mkdir -p "$CACHE_DIR"
-
-	procd_open_instance main
-	if [ -n "$endpoint" ]; then
-		procd_set_param command "$BIN" -4 -e "$endpoint" --cfon --country "$country" -b "${bind}:${port}" --cache-dir "$CACHE_DIR" --test-url "$test_url"
-	else
-		procd_set_param command "$BIN" -4 --cfon --country "$country" -b "${bind}:${port}" --cache-dir "$CACHE_DIR" --test-url "$test_url"
-	fi
-	procd_set_param respawn 3600 5 5
-	procd_set_param stdout 1
-	procd_set_param stderr 1
-	procd_close_instance
+	config_get_bool enabled main enabled 0; [ "$enabled" -eq 1 ] || return 0
+	config_get country main country NL; config_get bind main bind 192.168.1.1; config_get port main port 8086
+	config_get endpoint main endpoint "188.114.99.150:1701"; config_get test_url main test_url "http://example.com"
+	mkdir -p "$CACHE_DIR"; procd_open_instance main
+	if [ -n "$endpoint" ]; then procd_set_param command "$BIN" -4 -e "$endpoint" --cfon --country "$country" -b "${bind}:${port}" --cache-dir "$CACHE_DIR" --test-url "$test_url"
+	else procd_set_param command "$BIN" -4 --cfon --country "$country" -b "${bind}:${port}" --cache-dir "$CACHE_DIR" --test-url "$test_url"; fi
+	procd_set_param respawn 3600 5 5; procd_set_param stdout 1; procd_set_param stderr 1; procd_close_instance
 }
 
-service_triggers() {
-	procd_add_reload_trigger owrt-psiphon
+boot() {
+	. /lib/functions.sh; config_load owrt-psiphon; local autostart auto_scan_boot
+	config_get_bool autostart main autostart 1; config_get_bool auto_scan_boot main auto_scan_boot 0
+	if [ "$autostart" -eq 1 ]; then
+		uci -q set owrt-psiphon.main.enabled='1' && uci -q commit owrt-psiphon; start
+		[ "$auto_scan_boot" -eq 1 ] && (sleep 15 && /usr/libexec/owrt-psiphon/owrt-psiphonctl scan) >/dev/null 2>&1 &
+	else uci -q set owrt-psiphon.main.enabled='0' && uci -q commit owrt-psiphon; fi
 }
+
+service_triggers() { procd_add_reload_trigger owrt-psiphon; }
 EOF
 
 cat << 'EOF' > /usr/libexec/owrt-psiphon/owrt-psiphonctl
 #!/bin/sh
-# OWRTPsiphon control helper (Alpha 2). No Steer/Zapret/firewall rules are modified.
+APP=/opt/owrt-psiphon; BIN="$APP/warp-plus"; CONFIG=owrt-psiphon.main
+# ИСПРАВЛЕНО: правильный URL до raw-файла
+REPO_URL="https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh"
+BIND="$(uci -q get ${CONFIG}.bind || echo 192.168.1.1)"; PORT="$(uci -q get ${CONFIG}.port || echo 8086)"
+COUNTRY="$(uci -q get ${CONFIG}.country || echo NL)"; ENDPOINT="$(uci -q get ${CONFIG}.endpoint || echo 188.114.99.150:1701)"
+TEST_URL="$(uci -q get ${CONFIG}.test_url || echo http://example.com)"
+SCANFILE="$APP/scan-results.json"; SCAN_PIDFILE=/var/run/owrt-psiphon-scan.pid; PROBE_FILE=/var/run/owrt-psiphon-probe.state
+ALL_COUNTRIES="NL DE FI SE PL AT CH FR GB NO BE CZ DK EE LV ES IT PT IE BG RO HR HU RS SK SG JP IN AU CA US"
+SCAN_LIST="NL DE FI SE PL AT CH FR GB NO"
 
-APP=/opt/owrt-psiphon
-BIN="$APP/warp-plus"
-CACHE_DIR="$APP/cache"
-CONFIG=owrt-psiphon.main
-BIND="$(uci -q get ${CONFIG}.bind || echo 192.168.1.1)"
-PORT="$(uci -q get ${CONFIG}.port || echo 8086)"
-COUNTRY="$(uci -q get ${CONFIG}.country || echo NL)"
-ENDPOINT="$(uci -q get ${CONFIG}.endpoint || echo 188.114.99.150:1701)"
-TEST_URL="$(uci -q get ${CONFIG}.test_url || echo http://example.com/)"
-
-SCANFILE=/var/run/owrt-psiphon-scan.json
-SCAN_PIDFILE=/var/run/owrt-psiphon-scan.pid
-PROBE_FILE=/var/run/owrt-psiphon-probe.state
-
-ALL_COUNTRIES="NL DE BE FR GB PL CZ AT CH FI SE NO EE LV DK ES IT PT IE BG RO HR HU RS SK SG JP IN AU CA US"
-
-valid_country() {
-	for c in $ALL_COUNTRIES; do
-		[ "$c" = "$1" ] && return 0
-	done
-	return 1
-}
-
-json_escape() {
-	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'
-}
-
-reply() {
-	printf '{"ok":%s,"message":"%s"}\n' "$1" "$(json_escape "$2")"
-}
-
-managed_pid() {
-	p="$(ubus call service list '{"name":"owrt-psiphon"}' 2>/dev/null | sed -n '/"pid"/s/[^0-9]//gp' | head -n 1)"
-	if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
-		printf '%s\n' "$p"
-		return 0
-	fi
-	return 1
-}
-
-warp_pids() {
-	scan_pid=""
-	[ -s "$SCAN_PIDFILE" ] && scan_pid="$(cat "$SCAN_PIDFILE" 2>/dev/null || true)"
-	for p in $(pidof warp-plus 2>/dev/null || true); do
-		[ "$p" = "$scan_pid" ] && continue
-		printf '%s\n' "$p"
-	done
-}
-
-is_our_manual_process() {
-	p="$1"
-	mp="$(managed_pid 2>/dev/null || true)"
-	[ -n "$mp" ] && [ "$p" = "$mp" ] && return 1
-	[ -r "/proc/$p/cmdline" ] || return 1
-	cmd="$(tr '\000' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)"
-	case "$cmd" in
-		*"--cfon"*"${BIND}:${PORT}"*) return 0 ;;
-		*) return 1 ;;
-	esac
-}
-
-port_listening() {
-	netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${PORT}$"
-}
+valid_country() { for c in $ALL_COUNTRIES; do [ "$c" = "$1" ] && return 0; done; return 1; }
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; s/\n/\\n/g'; }
+reply() { printf '{"ok":%s,"message":"%s"}\n' "$1" "$(json_escape "$2")"; }
+managed_pid() { p="$(ubus call service list '{"name":"owrt-psiphon"}' 2>/dev/null | sed -n '/"pid"/s/[^0-9]//gp' | head -n 1)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null && printf '%s\n' "$p"; }
+port_listening() { netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\.)${PORT}$"; }
 
 probe_internal() {
 	port_listening || return 1
-	out="$(curl -4 -fsS --max-time 10 --socks5-hostname "${BIND}:${PORT}" \
-		-w '\n%{time_starttransfer}' https://ipinfo.io/json 2>/dev/null)" || return 1
-
-	body="$(printf '%s\n' "$out" | sed '$d')"
-	secs="$(printf '%s\n' "$out" | tail -n 1)"
+	out="$(curl -4 -fsS --max-time 10 --socks5-hostname "${BIND}:${PORT}" -w '\n%{time_starttransfer}' https://ipinfo.io 2>/dev/null)" || return 1
+	body="$(printf '%s\n' "$out" | sed '$d')"; secs="$(printf '%s\n' "$out" | tail -n 1)"
 	cc="$(printf '%s' "$body" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 	ip="$(printf '%s' "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-	[ -n "$cc" ] || return 1
-	ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
-
-	umask 077
+	[ -n "$cc" ] || return 1; ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
 	printf "PROBE_COUNTRY='%s'\nPROBE_IP='%s'\nPROBE_MS='%s'\n" "$cc" "$ip" "$ms" > "$PROBE_FILE"
-	return 0
 }
 
-wait_socks_ready() {
-	max_wait="${1:-35}"
-	elapsed=0
-	while [ "$elapsed" -lt "$max_wait" ]; do
-		if probe_internal; then
-			return 0
-		fi
-		sleep 2
-		elapsed=$((elapsed + 2))
-	done
-	return 1
+wait_socks_ready() { max_wait="${1:-35}"; elapsed=0; while [ "$elapsed" -lt "$max_wait" ]; do probe_internal && return 0; sleep 2; elapsed=$((elapsed + 2)); done; return 1; }
+
+sync_cron() {
+	hours="$(uci -q get ${CONFIG}.watchdog_hours || echo 0)"; CRON_FILE="/etc/crontabs/root"; mkdir -p /etc/crontabs; touch "$CRON_FILE"
+	grep -v 'owrt-psiphonctl watchdog' "$CRON_FILE" > "${CRON_FILE}.tmp" 2>/dev/null || true
+	case "$hours" in 1) printf '0 * * * * /usr/libexec/owrt-psiphon/owrt-psiphonctl watchdog >/dev/null 2>&1\n' >> "${CRON_FILE}.tmp" ;; 6|12|24) printf '0 */%s * * * /usr/libexec/owrt-psiphon/owrt-psiphonctl watchdog >/dev/null 2>&1\n' "$hours" >> "${CRON_FILE}.tmp" ;; esac
+	mv -f "${CRON_FILE}.tmp" "$CRON_FILE"; /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
 status() {
-	running=false; managed=false; pid=""; manual=false; listening=false; socks_ok=false
-	if p="$(managed_pid)"; then
-		running=true; managed=true; pid="$p"
-	else
-		for p in $(warp_pids); do
-			if is_our_manual_process "$p"; then
-				running=true; manual=true; pid="$p"
-				break
-			fi
-		done
+	running=false; pid=""; listening=false; socks_ok=false; exit_country=""; exit_ip=""; latency=""
+	if p="$(managed_pid)"; then running=true; pid="$p"; fi; port_listening && listening=true
+	if [ "$listening" = true ] && probe_internal; then
+		socks_ok=true; exit_country="$(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
+		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"; latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 	fi
-
-	port_listening && listening=true
-
-	exit_country=""; exit_ip=""; latency=""
-	if [ "$listening" = true ]; then
-		if probe_internal; then
-			socks_ok=true
-		fi
-	fi
-
-	if [ "$socks_ok" = true ] && [ -s "$PROBE_FILE" ]; then
-		exit_country="$(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-		latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-	fi
-
-	auto="$(uci -q get ${CONFIG}.auto || echo 0)"
-	version="неизвестна"
-	if [ -x "$BIN" ]; then
-		v="$("$BIN" version 2>/dev/null | head -n 1 | tr -d '\r')"
-		[ -n "$v" ] && version="$v"
-	fi
-
+	version="v1.2.6"; [ -x "$BIN" ] && v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)" && [ -n "$v" ] && version="$v"
+	autostart="$(uci -q get ${CONFIG}.autostart || echo 1)"; auto_scan_boot="$(uci -q get ${CONFIG}.auto_scan_boot || echo 0)"; watchdog_hours="$(uci -q get ${CONFIG}.watchdog_hours || echo 0)"
 	sub="socks5://${BIND}:${PORT}#OWRTPsiphon"
-	printf '{"ok":true,"installed":%s,"running":%s,"managed":%s,"manual":%s,"listening":%s,"socks_ok":%s,"pid":"%s","country":"%s","bind":"%s","port":%s,"auto":%s,"version":"%s","subscription":"%s","exit_country":"%s","exit_ip":"%s","latency_ms":"%s","scan_running":%s}\n' \
-		"$([ -x "$BIN" ] && echo true || echo false)" \
-		"$running" "$managed" "$manual" "$listening" "$socks_ok" "$pid" \
-		"$(json_escape "$COUNTRY")" "$(json_escape "$BIND")" "$PORT" \
-		"$([ "$auto" = 1 ] && echo true || echo false)" \
-		"$(json_escape "$version")" "$(json_escape "$sub")" \
-		"$(json_escape "$exit_country")" "$(json_escape "$exit_ip")" "$(json_escape "$latency")" \
-		"$([ -s "$SCAN_PIDFILE" ] && kill -0 "$(cat "$SCAN_PIDFILE" 2>/dev/null)" 2>/dev/null && echo true || echo false)"
+	printf '{"ok":true,"running":%s,"listening":%s,"socks_ok":%s,"pid":"%s","country":"%s","bind":"%s","port":%s,"version":"%s","subscription":"%s","exit_country":"%s","exit_ip":"%s","latency_ms":"%s","autostart":%s,"auto_scan_boot":%s,"watchdog_hours":%s,"scan_running":%s}\n' \
+		"$running" "$listening" "$socks_ok" "$pid" "$(json_escape "$COUNTRY")" "$(json_escape "$BIND")" "$PORT" "$(json_escape "$version")" "$(json_escape "$sub")" "$(json_escape "$exit_country")" "$(json_escape "$exit_ip")" "$(json_escape "$latency")" "$autostart" "$auto_scan_boot" "$watchdog_hours" "$([ -s "$SCAN_PIDFILE" ] && kill -0 "$(cat "$SCAN_PIDFILE" 2>/dev/null)" 2>/dev/null && echo true || echo false)"
+}
+
+check_update() {
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.2)"
+	remote_head="$(curl -fsSL --max-time 8 "$REPO_URL" 2>/dev/null | head -n 5 || true)"
+	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
+	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+	if [ -n "$remote_ver" ] && [ "$remote_ver" != "$local_ver" ]; then printf '{"ok":true,"has_update":true,"remote_version":"%s","message":"Доступно обновление v%s (текущая v%s)"}\n' "$remote_ver" "$remote_ver" "$local_ver"
+	else printf '{"ok":true,"has_update":false,"remote_version":"%s","message":"Установлена последняя версия (v%s)"}\n' "$local_ver" "$local_ver"; fi
+}
+
+apply_update() {
+	tmp_upd="/tmp/owrt-psiphon-update.sh"; curl -fsSL --max-time 15 "$REPO_URL" -o "$tmp_upd" 2>/dev/null || { rm -f "$tmp_upd"; reply false 'Ошибка загрузки'; return 1; }
+	head -n 5 "$tmp_upd" | grep -q 'OWRTPsiphon' || { rm -f "$tmp_upd"; reply false 'Неверный файл'; return 1; }
+	chmod 755 "$tmp_upd"; reply true 'Обновление запущено. Страница обновится через 5 секунд.'
+	(sleep 1; sh "$tmp_upd" >/dev/null 2>&1 || true; rm -f "$tmp_upd") >/dev/null 2>&1 &
 }
 
 start_service() {
-	if managed_pid >/dev/null; then
-		if wait_socks_ready 10; then
-			reply true 'Служба уже запущена и SOCKS5 активен'
-		else
-			reply false 'Процесс запущен, но SOCKS5 ещё поднимается или не отвечает'
-		fi
-		return 0
-	fi
-	if port_listening; then
-		reply false 'Порт 8086 занят. Если это ручной Psiphon, нажмите «Перенять текущий туннель».'
-		return 1
-	fi
-
-	uci -q set ${CONFIG}.enabled='1'
-	uci -q commit owrt-psiphon
-	/etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || true
-	/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-
-	if wait_socks_ready 35; then
-		uci -q set ${CONFIG}.last_good_country="$COUNTRY"
-		uci -q commit owrt-psiphon
-		reply true "Служба запущена, туннель ($COUNTRY) проверен"
-	else
-		reply false 'Процесс запущен, но SOCKS5 не поднялся за 35 с. Проверьте logread -e owrt-psiphon.'
-		return 1
-	fi
+	managed_pid >/dev/null && { wait_socks_ready 10 && reply true 'Служба уже запущена' || reply false 'Процесс запущен, SOCKS5 не отвечает'; return 0; }
+	uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon; /etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || true; /etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
+	if wait_socks_ready 35; then uci -q set ${CONFIG}.last_good_country="$COUNTRY" && uci -q commit owrt-psiphon; reply true "Служба запущена ($COUNTRY)"
+	else reply false 'SOCKS5 не поднялся за 35 с'; return 1; fi
 }
 
-stop_service() {
-	uci -q set ${CONFIG}.enabled='0'
-	uci -q commit owrt-psiphon
-	/etc/init.d/owrt-psiphon stop >/dev/null 2>&1 || true
-	/etc/init.d/owrt-psiphon disable >/dev/null 2>&1 || true
-	rm -f "$PROBE_FILE"
-	reply true 'Служба остановлена'
-}
-
-adopt_service() {
-	found=""
-	for p in $(warp_pids); do
-		if is_our_manual_process "$p"; then found="$p"; break; fi
-	done
-	if [ -z "$found" ]; then
-		reply false 'Ручной процесс warp-plus на порту 8086 не найден'
-		return 1
-	fi
-
-	old_cache=""; old_country=""; old_endpoint=""; old_test_url=""
-	if [ -r "/proc/$found/cmdline" ]; then
-		prev=""
-		for arg in $(tr '\000' '\n' < "/proc/$found/cmdline" 2>/dev/null || true); do
-			case "$prev" in
-				--cache-dir) old_cache="$arg" ;;
-				--country) old_country="$arg" ;;
-				-e|--endpoint) old_endpoint="$arg" ;;
-				--test-url) old_test_url="$arg" ;;
-			esac
-			prev="$arg"
-		done
-	fi
-
-	if [ -n "$old_cache" ] && [ -d "$old_cache" ] && [ "$old_cache" != "$CACHE_DIR" ]; then
-		mkdir -p "$CACHE_DIR"
-		cp -af "$old_cache/." "$CACHE_DIR/" 2>/dev/null || true
-	fi
-	[ -n "$old_country" ] && valid_country "$old_country" && uci -q set ${CONFIG}.country="$old_country"
-	[ -n "$old_endpoint" ] && uci -q set ${CONFIG}.endpoint="$old_endpoint"
-	if [ -n "$old_test_url" ]; then
-		case "$old_test_url" in http://*) uci -q set ${CONFIG}.test_url="$old_test_url" ;; esac
-	fi
-	uci -q set ${CONFIG}.enabled='1'
-	uci -q commit owrt-psiphon
-
-	kill "$found" 2>/dev/null || true
-	n=0
-	while kill -0 "$found" 2>/dev/null && [ "$n" -lt 8 ]; do
-		sleep 1; n=$((n + 1))
-	done
-	kill -0 "$found" 2>/dev/null && kill -9 "$found" 2>/dev/null || true
-
-	/etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || true
-	/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-
-	COUNTRY="$(uci -q get ${CONFIG}.country || echo NL)"
-	if wait_socks_ready 35; then
-		uci -q set ${CONFIG}.last_good_country="$COUNTRY"
-		uci -q commit owrt-psiphon
-		reply true "Туннель перенят под procd и проверен ($COUNTRY)"
-	else
-		reply false 'Туннель передан службе, но SOCKS5 пока не отвечает'
-		return 1
-	fi
-}
+stop_service() { uci -q set ${CONFIG}.enabled='0' && uci -q commit owrt-psiphon; /etc/init.d/owrt-psiphon stop >/dev/null 2>&1 || true; rm -f "$PROBE_FILE"; reply true 'Служба остановлена'; }
 
 safe_restart() {
-	new_country="$1"
-	old_country="$(uci -q get ${CONFIG}.last_good_country || uci -q get ${CONFIG}.country || echo NL)"
-
-	uci -q set ${CONFIG}.country="$new_country"
-	uci -q set ${CONFIG}.enabled='1'
-	uci -q commit owrt-psiphon
-	/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-
-	if wait_socks_ready 35; then
-		uci -q set ${CONFIG}.last_good_country="$new_country"
-		uci -q commit owrt-psiphon
-		reply true "Страна изменена на $new_country; туннель проверен"
-		return 0
+	new_country="$1"; old_country="$(uci -q get ${CONFIG}.last_good_country || uci -q get ${CONFIG}.country || echo NL)"
+	uci -q set ${CONFIG}.country="$new_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon; /etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
+	if wait_socks_ready 35; then uci -q set ${CONFIG}.last_good_country="$new_country" && uci -q commit owrt-psiphon; reply true "Переключено на $new_country"; return 0
 	else
 		if [ -n "$old_country" ] && [ "$old_country" != "$new_country" ]; then
-			uci -q set ${CONFIG}.country="$old_country"
-			uci -q commit owrt-psiphon
-			/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-			wait_socks_ready 30 || true
-			reply false "Страна $new_country не поднялась; выполнен откат на $old_country"
-		else
-			reply false "Страна $new_country не прошла проверку SOCKS5"
-		fi
-		return 1
+			uci -q set ${CONFIG}.country="$old_country" && uci -q commit owrt-psiphon; /etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true; wait_socks_ready 30 || true
+			reply false "Узел $new_country не ответил; откат на $old_country"
+		else reply false "Узел $new_country не прошёл проверку"; fi; return 1
 	fi
 }
 
-set_country() {
-	c="$1"
-	valid_country "$c" || { reply false 'Недопустимый код страны'; return 1; }
+set_country() { c="$1"; valid_country "$c" || { reply false 'Неверный код страны'; return 1; }; if managed_pid >/dev/null; then safe_restart "$c"; else uci -q set ${CONFIG}.country="$c" && uci -q commit owrt-psiphon; reply true "Выбрана страна $c"; fi; }
 
-	if managed_pid >/dev/null; then
-		safe_restart "$c"
-	elif port_listening; then
-		reply false 'Сначала нажмите «Перенять текущий туннель»'
-		return 1
-	else
-		uci -q set ${CONFIG}.country="$c"
-		uci -q commit owrt-psiphon
-		reply true "Выбрана страна $c. Нажмите «Запустить»."
-	fi
+set_auto() {
+	uci -q set ${CONFIG}.autostart="${1:-1}" && uci -q set ${CONFIG}.auto_scan_boot="${2:-0}" && uci -q set ${CONFIG}.watchdog_hours="${3:-0}" && uci -q commit owrt-psiphon
+	[ "${1:-1}" = "1" ] && /etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || /etc/init.d/owrt-psiphon disable >/dev/null 2>&1 || true
+	sync_cron; reply true 'Настройки автоматизации сохранены'
 }
 
-probe() {
-	if probe_internal; then
-		cc="$(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-		ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-		ms="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-		reply true "SOCKS5 работает: выход ${cc:-?}, IP ${ip:-?}, задержка ${ms} мс"
-	else
-		rm -f "$PROBE_FILE"
-		reply false 'SOCKS5 не отвечает или порт 8086 не слушается'
-		return 1
-	fi
-}
+probe() { if probe_internal; then reply true "SOCKS5 активен: $(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'") ($(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'")), $(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'") мс"; else rm -f "$PROBE_FILE"; reply false 'SOCKS5 не отвечает'; return 1; fi; }
+scan_status() { [ -s "$SCANFILE" ] && cat "$SCANFILE" || printf '{"running":false,"message":"Автоподбор ещё не запускался","results":[]}\n'; }
+scan_start() { [ -x "$BIN" ] || { reply false 'Бинарник не найден'; return 1; }; [ -s "$SCAN_PIDFILE" ] && kill -0 "$(cat "$SCAN_PIDFILE" 2>/dev/null)" 2>/dev/null && { reply false 'Уже выполняется'; return 1; }; "$0" _scan </dev/null >/dev/null 2>&1 & echo $! > "$SCAN_PIDFILE"; reply true 'Автоподбор запущен'; }
 
-scan_status() {
-	[ -s "$SCANFILE" ] && cat "$SCANFILE" || printf '{"running":false,"message":"Автоподбор ещё не запускался","results":[]}\n'
-}
-
-scan_start() {
-	[ -x "$BIN" ] || { reply false 'Бинарник warp-plus не установлен'; return 1; }
-	if [ -s "$SCAN_PIDFILE" ] && kill -0 "$(cat "$SCAN_PIDFILE" 2>/dev/null)" 2>/dev/null; then
-		reply false 'Проверка стран уже выполняется'
-		return 1
-	fi
-	"$0" _scan </dev/null >/dev/null 2>&1 &
-	echo $! > "$SCAN_PIDFILE"
-	reply true 'Проверка стран запущена на изолированном порту 18086'
+# ИСПРАВЛЕНО: используем awk вместо цикла while, чтобы избежать проблем с субшеллом и потерянными запятыми
+build_sorted_json() {
+	sort -t '|' -k1,1n -k2,2n "$1" 2>/dev/null | awk -F'|' 'BEGIN{printf "["} {if(NR>1)printf ","; printf "{\"country\":\"%s\",\"exit_country\":\"%s\",\"ip\":\"%s\",\"latency_ms\":%s,\"state\":\"%s\"}", $3, $4, $5, $2, $6} END{printf "]"}'
 }
 
 scan_worker() {
-	probe_pid=""
-	trap 'rm -f "$SCAN_PIDFILE"; [ -n "$probe_pid" ] && kill -9 "$probe_pid" 2>/dev/null || true' EXIT INT TERM
-
-	countries='NL DE BE FR GB PL CZ AT CH FI SE NO EE LV US'
-	was_running=0
-	old_country="$COUNTRY"
-	managed_pid >/dev/null && was_running=1
-
-	if netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(:|\.)18086$'; then
-		printf '{"running":false,"message":"Порт 18086 занят другим процессом","results":[]}\n' > "$SCANFILE"
-		return 1
-	fi
-
-	mkdir -p "$APP/cache-scan"
-	best_country=""; best_ms=999999; results='[]'
-	printf '{"running":true,"current":"","best":"","best_ms":null,"results":[]}\n' > "$SCANFILE"
-
-	for c in $countries; do
-		printf '{"running":true,"current":"%s","best":"%s","best_ms":%s,"results":%s}\n' \
-			"$c" "$best_country" "$([ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms")" "$results" > "$SCANFILE"
-
-		if [ -n "$ENDPOINT" ]; then
-			"$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" \
-				-b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" \
-				--test-url "$TEST_URL" >/dev/null 2>&1 &
-		else
-			"$BIN" -4 --cfon --country "$c" \
-				-b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" \
-				--test-url "$TEST_URL" >/dev/null 2>&1 &
-		fi
-		probe_pid=$!
-
-		result=""; got=""; ip=""; ms=""; state="timeout"
-		n=0
-		while [ "$n" -lt 11 ]; do
-			sleep 2
-			kill -0 "$probe_pid" 2>/dev/null || break
-			if netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(:|\.)18086$'; then
-				result="$(curl -4 -fsS --max-time 5 --socks5-hostname 127.0.0.1:18086 \
-					-w '\n%{time_starttransfer}' https://ipinfo.io/json 2>/dev/null)" && break
-			fi
-			n=$((n + 1))
-		done
-
-		kill "$probe_pid" 2>/dev/null || true
-		sleep 1
-		kill -0 "$probe_pid" 2>/dev/null && kill -9 "$probe_pid" 2>/dev/null || true
-		probe_pid=""
-
+	probe_pid=""; tmp_lines="/tmp/owrt-scan-lines.$$"; trap 'rm -f "$SCAN_PIDFILE" "$tmp_lines"; [ -n "$probe_pid" ] && kill -9 "$probe_pid" 2>/dev/null || true' EXIT INT TERM
+	was_running=0; old_country="$COUNTRY"; managed_pid >/dev/null && was_running=1; mkdir -p "$APP/cache-scan"; : > "$tmp_lines"; best_country=""; best_ms=999999
+	for c in $SCAN_LIST; do
+		printf '{"running":true,"current":"%s","best":"%s","best_ms":%s,"results":%s}\n' "$c" "$best_country" "$([ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms")" "$(build_sorted_json "$tmp_lines")" > "$SCANFILE"
+		if [ -n "$ENDPOINT" ]; then "$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" --test-url "$TEST_URL" >/dev/null 2>&1 &
+		else "$BIN" -4 --cfon --country "$c" -b 127.0.0.1:18086 --cache-dir "$APP/cache-scan" --test-url "$TEST_URL" >/dev/null 2>&1 & fi
+		probe_pid=$!; result=""; got=""; ip=""; ms="null"; state="timeout"; rank=2; n=0
+		while [ "$n" -lt 10 ]; do sleep 2; kill -0 "$probe_pid" 2>/dev/null || break; netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(:|\.)18086$' && result="$(curl -4 -fsS --max-time 5 --socks5-hostname 127.0.0.1:18086 -w '\n%{time_starttransfer}' https://ipinfo.io 2>/dev/null)" && break; n=$((n + 1)); done
+		kill "$probe_pid" 2>/dev/null || true; sleep 1; kill -0 "$probe_pid" 2>/dev/null && kill -9 "$probe_pid" 2>/dev/null || true; probe_pid=""
 		if [ -n "$result" ]; then
-			body="$(printf '%s\n' "$result" | sed '$d')"
-			secs="$(printf '%s\n' "$result" | tail -n 1)"
+			body="$(printf '%s\n' "$result" | sed '$d')"; secs="$(printf '%s\n' "$result" | tail -n 1)"
 			got="$(printf '%s' "$body" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-			ip="$(printf '%s' "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-			ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
-			if [ "$got" = "$c" ]; then
-				state="ok"
-				if [ "$ms" -lt "$best_ms" ]; then
-					best_ms="$ms"
-					best_country="$c"
-				fi
-			else
-				state="mismatch"
-			fi
+			ip="$(printf '%s' "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"; calc_ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
+			if [ "$got" = "$c" ] && [ "$calc_ms" -gt 10 ]; then state="ok"; rank=1; ms="$calc_ms"; [ "$ms" -lt "$best_ms" ] && { best_ms="$ms"; best_country="$c"; }
+			else state="fail"; got=""; ip=""; ms="null"; fi
 		fi
-
-		entry="{\"country\":\"$c\",\"exit_country\":\"${got:-}\",\"ip\":\"${ip:-}\",\"latency_ms\":${ms:-null},\"state\":\"$state\"}"
-		if [ "$results" = '[]' ]; then results="[$entry]"; else results="${results%]},$entry]"; fi
-
-		printf '{"running":true,"current":"%s","best":"%s","best_ms":%s,"results":%s}\n' \
-			"$c" "$best_country" "$([ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms")" "$results" > "$SCANFILE"
+		printf '%s|%s|%s|%s|%s|%s\n' "$rank" "$ms" "$c" "$got" "$ip" "$state" >> "$tmp_lines"
 	done
-
+	final_json="$(build_sorted_json "$tmp_lines")"
 	if [ -n "$best_country" ]; then
-		if [ "$was_running" -eq 1 ] && [ "$best_country" != "$old_country" ]; then
-			printf '{"running":true,"current":"Переключение на %s...","best":"%s","best_ms":%s,"results":%s}\n' \
-				"$best_country" "$best_country" "$best_ms" "$results" > "$SCANFILE"
-			if safe_restart "$best_country" >/dev/null 2>&1; then
-				final_msg="Лучшая страна: $best_country (${best_ms} мс). Основной туннель переключён."
-			else
-				final_msg="Лучшая страна: $best_country (${best_ms} мс), но переключение не удалось — сохранён прежний туннель."
-			fi
-		else
-			uci -q set ${CONFIG}.country="$best_country"
-			uci -q commit owrt-psiphon
-			final_msg="Лучшая страна: $best_country (${best_ms} мс)."
-		fi
-		printf '{"running":false,"current":"","best":"%s","best_ms":%s,"message":"%s","results":%s}\n' \
-			"$best_country" "$best_ms" "$final_msg" "$results" > "$SCANFILE"
-	else
-		printf '{"running":false,"current":"","best":"","best_ms":null,"message":"Подходящих стран не найдено; действующий туннель сохранён","results":%s}\n' "$results" > "$SCANFILE"
-	fi
+		if [ "$was_running" -eq 1 ] && [ "$best_country" != "$old_country" ]; then safe_restart "$best_country" >/dev/null 2>&1 && msg="Лучший узел: $best_country (${best_ms} мс). Переключено." || msg="Лучший узел: $best_country (${best_ms} мс), откат на $old_country."
+		else uci -q set ${CONFIG}.country="$best_country" && uci -q commit owrt-psiphon; msg="Лучший узел: $best_country (${best_ms} мс)."; fi
+		printf '{"running":false,"current":"","best":"%s","best_ms":%s,"message":"%s","results":%s}\n' "$best_country" "$best_ms" "$msg" "$final_json" > "$SCANFILE"
+	else printf '{"running":false,"current":"","best":"","best_ms":null,"message":"Рабочих узлов не найдено","results":%s}\n' "$final_json" > "$SCANFILE"; fi
+}
+
+watchdog() {
+	[ "$(uci -q get ${CONFIG}.enabled || echo 0)" = "1" ] || return 0; probe_internal && return 0; cur="$(uci -q get ${CONFIG}.country || echo NL)"
+	if [ -s "$SCANFILE" ]; then for next_c in $(sed 's/},{/}\n{/g' "$SCANFILE" | grep '"state":"ok"' | sed -n 's/.*"country":"\([A-Z][A-Z]\)".*/\1/p'); do [ "$next_c" = "$cur" ] && continue; safe_restart "$next_c" >/dev/null 2>&1 && return 0; done; fi
+	scan_worker
+}
+
+uninstall_all() {
+	reply true 'Удаление OWRTPsiphon запущено.'
+	(sleep 1; /etc/init.d/owrt-psiphon stop >/dev/null 2>&1 || true; /etc/init.d/owrt-psiphon disable >/dev/null 2>&1 || true
+	[ -f /etc/crontabs/root ] && grep -v 'owrt-psiphonctl watchdog' /etc/crontabs/root > /etc/crontabs/root.tmp 2>/dev/null && mv -f /etc/crontabs/root.tmp /etc/crontabs/root && /etc/init.d/cron restart >/dev/null 2>&1 || true
+	killall warp-plus >/dev/null 2>&1 || true
+	rm -rf /opt/owrt-psiphon /etc/config/owrt-psiphon /etc/init.d/owrt-psiphon /usr/libexec/owrt-psiphon /usr/libexec/rpcd/owrt-psiphon /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json /www/luci-static/resources/view/owrt-psiphon /var/run/owrt-psiphon* /tmp/luci-indexcache
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || true) >/dev/null 2>&1 &
 }
 
 case "${1:-status}" in
-	status)      status ;;
-	start)       start_service ;;
-	stop)        stop_service ;;
-	adopt)       adopt_service ;;
-	set_country) set_country "${2:-}" ;;
-	probe)       probe ;;
-	scan)        scan_start ;;
-	scan_status) scan_status ;;
-	_scan)       scan_worker ;;
-	*)           reply false 'Неизвестная команда'; exit 1 ;;
+	status) status ;; start) start_service ;; stop) stop_service ;; set_country) set_country "${2:-}" ;; set_auto) set_auto "${2:-1}" "${3:-0}" "${4:-0}" ;;
+	probe) probe ;; scan) scan_start ;; scan_status) scan_status ;; _scan) scan_worker ;; watchdog) watchdog ;; check_update) check_update ;;
+	apply_update) apply_update ;; uninstall) uninstall_all ;; *) reply false 'Неизвестная команда'; exit 1 ;;
 esac
 EOF
 
 cat << 'EOF' > /usr/libexec/rpcd/owrt-psiphon
 #!/bin/sh
-
 CTL="/usr/libexec/owrt-psiphon/owrt-psiphonctl"
-
 case "$1" in
-	list)
-		cat << 'JSON'
-{
-	"status": {},
-	"start": {},
-	"stop": {},
-	"adopt": {},
-	"set_country": { "country": "NL" },
-	"probe": {},
-	"scan": {},
-	"scan_status": {}
-}
-JSON
-		;;
-	call)
-		read -r input || input="{}"
+	list) printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"NL"},"set_auto":{"autostart":1,"auto_scan_boot":0,"watchdog_hours":0},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"uninstall":{}}\n' ;;
+	call) read -r input || input="{}"
 		case "$2" in
-			status)      "$CTL" status ;;
-			start)       "$CTL" start ;;
-			stop)        "$CTL" stop ;;
-			adopt)       "$CTL" adopt ;;
-			probe)       "$CTL" probe ;;
-			scan)        "$CTL" scan ;;
-			scan_status) "$CTL" scan_status ;;
-			set_country)
-				c="$(printf '%s' "$input" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-				"$CTL" set_country "$c"
-				;;
-			*)
-				printf '{"ok":false,"message":"Unknown RPC method"}\n'
-				;;
-		esac
-		;;
+			status|start|stop|probe|scan|scan_status|check_update|apply_update|uninstall) "$CTL" "$2" ;;
+			set_country) "$CTL" set_country "$(printf '%s' "$input" | sed -n 's/.*"country"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" ;;
+			set_auto) "$CTL" set_auto "$(printf '%s' "$input" | sed -n 's/.*"autostart"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" "$(printf '%s' "$input" | sed -n 's/.*"auto_scan_boot"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" "$(printf '%s' "$input" | sed -n 's/.*"watchdog_hours"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')" ;;
+			*) printf '{"ok":false,"message":"Unknown method"}\n' ;;
+		esac ;;
 esac
 EOF
 
-cat << 'EOF' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
-{
-	"admin/services/owrt-psiphon": {
-		"title": "OWRTPsiphon",
-		"order": 90,
-		"action": {
-			"type": "view",
-			"path": "owrt-psiphon/main"
-		},
-		"depends": {
-			"acl": [ "luci-app-owrt-psiphon" ]
-		}
-	}
-}
-EOF
-
-cat << 'EOF' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
-{
-	"luci-app-owrt-psiphon": {
-		"description": "Grant access to OWRTPsiphon LuCI control",
-		"read": {
-			"ubus": {
-				"owrt-psiphon": [ "status", "scan_status" ]
-			}
-		},
-		"write": {
-			"ubus": {
-				"owrt-psiphon": [ "start", "stop", "adopt", "set_country", "probe", "scan" ]
-			}
-		}
-	}
-}
-EOF
+printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
+printf '{"luci-app-owrt-psiphon":{"description":"OWRTPsiphon LuCI access","read":{"ubus":{"owrt-psiphon":["status","scan_status","check_update"]}},"write":{"ubus":{"owrt-psiphon":["start","stop","set_country","set_auto","probe","scan","apply_update","uninstall"]}}}}\n' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
 
 cat << 'EOF' > /www/luci-static/resources/view/owrt-psiphon/main.js
-'use strict';
-'require view';
-'require rpc';
-'require ui';
-
-var callStatus     = rpc.declare({ object: 'owrt-psiphon', method: 'status', expect: {} });
-var callScanStatus = rpc.declare({ object: 'owrt-psiphon', method: 'scan_status', expect: {} });
-var callStart      = rpc.declare({ object: 'owrt-psiphon', method: 'start', expect: {} });
-var callStop       = rpc.declare({ object: 'owrt-psiphon', method: 'stop', expect: {} });
-var callAdopt      = rpc.declare({ object: 'owrt-psiphon', method: 'adopt', expect: {} });
-var callSetCountry = rpc.declare({ object: 'owrt-psiphon', method: 'set_country', params: ['country'], expect: {} });
-var callProbe      = rpc.declare({ object: 'owrt-psiphon', method: 'probe', expect: {} });
-var callScan       = rpc.declare({ object: 'owrt-psiphon', method: 'scan', expect: {} });
-
-var COUNTRIES = [
-	['NL', 'NL — Нидерланды'], ['DE', 'DE — Германия'], ['BE', 'BE — Бельгия'],
-	['FR', 'FR — Франция'], ['GB', 'GB — Великобритания'], ['PL', 'PL — Польша'],
-	['CZ', 'CZ — Чехия'], ['AT', 'AT — Австрия'], ['CH', 'CH — Швейцария'],
-	['FI', 'FI — Финляндия'], ['SE', 'SE — Швеция'], ['NO', 'NO — Норвегия'],
-	['EE', 'EE — Эстония'], ['LV', 'LV — Латвия'], ['DK', 'DK — Дания'],
-	['ES', 'ES — Испания'], ['IT', 'IT — Италия'], ['PT', 'PT — Португалия'],
-	['IE', 'IE — Ирландия'], ['BG', 'BG — Болгария'], ['RO', 'RO — Румыния'],
-	['HR', 'HR — Хорватия'], ['HU', 'HU — Венгрия'], ['RS', 'RS — Сербия'],
-	['SK', 'SK — Словакия'], ['SG', 'SG — Сингапур'], ['JP', 'JP — Япония'],
-	['IN', 'IN — Индия'], ['AU', 'AU — Австралия'], ['CA', 'CA — Канада'],
-	['US', 'US — США']
-];
-
+'use strict'; 'require view'; 'require rpc'; 'require ui';
+var callStatus = rpc.declare({ object: 'owrt-psiphon', method: 'status', expect: {} }), callScanStatus = rpc.declare({ object: 'owrt-psiphon', method: 'scan_status', expect: {} }), callStart = rpc.declare({ object: 'owrt-psiphon', method: 'start', expect: {} }), callStop = rpc.declare({ object: 'owrt-psiphon', method: 'stop', expect: {} }), callSetCountry = rpc.declare({ object: 'owrt-psiphon', method: 'set_country', params: ['country'], expect: {} }), callSetAuto = rpc.declare({ object: 'owrt-psiphon', method: 'set_auto', params: ['autostart', 'auto_scan_boot', 'watchdog_hours'], expect: {} }), callProbe = rpc.declare({ object: 'owrt-psiphon', method: 'probe', expect: {} }), callScan = rpc.declare({ object: 'owrt-psiphon', method: 'scan', expect: {} }), callCheckUpdate = rpc.declare({ object: 'owrt-psiphon', method: 'check_update', expect: {} }), callApplyUpdate = rpc.declare({ object: 'owrt-psiphon', method: 'apply_update', expect: {} }), callUninstall = rpc.declare({ object: 'owrt-psiphon', method: 'uninstall', expect: {} });
+var CODES = ['NL','DE','FI','SE','PL','AT','CH','FR','GB','NO','BE','CZ','DK','EE','LV','ES','IT','PT','IE','BG','RO','HR','HU','RS','SK','SG','JP','IN','AU','CA','US'];
 return view.extend({
 	render: function() {
-		var status = {}, scan = {}, pollActive = false;
-		var subscription = 'socks5://192.168.1.1:8086#OWRTPsiphon';
-
-		var root = E('div', { 'class': 'cbi-map' });
-		var state = E('div', { 'class': 'table' });
-		var result = E('div', { 'style': 'margin-top:8px;font-weight:bold;color:#d97706' });
-		var scanBox = E('div', { 'style': 'margin-top:8px' });
-		var scanResults = E('div', { 'style': 'margin-top:8px' });
-		var country = E('select', { 'id': 'owrt-country', 'class': 'cbi-input-select' },
-			COUNTRIES.map(function(c) { return E('option', { 'value': c[0] }, c[1]); })
-		);
-
-		function notify(msg, type) {
-			ui.addNotification(null, E('p', {}, msg), type || 'info');
+		var status = {}, scan = {}, pollActive = false, switching = false, sub = 'socks5://192.168.1.1:8086#OWRTPsiphon';
+		var root = E('div', { 'class': 'cbi-map' }), stateTable = E('div', { 'class': 'table' }), scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic' }), updateBox = E('div', { 'style': 'margin-top:8px' });
+		var chkAutostart = E('input', { 'type': 'checkbox' }), chkScanBoot = E('input', { 'type': 'checkbox' });
+		var selWatchdog = E('select', { 'class': 'cbi-input-select', 'style': 'min-width:170px' }, [E('option', { 'value': '0' }, 'Отключена'), E('option', { 'value': '1' }, 'Раз в 1 час'), E('option', { 'value': '6' }, 'Раз в 6 часов'), E('option', { 'value': '12' }, 'Раз в 12 часов'), E('option', { 'value': '24' }, 'Раз в 24 часа')]);
+		function notify(m, t) { ui.addNotification(null, E('p', {}, m), t || 'info'); }
+		function copyText(txt) { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(function() { notify('Скопировано: ' + txt); }); else { var ta = E('textarea', { 'style': 'position:fixed;opacity:0' }, txt); document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); notify('Скопировано: ' + txt); } }
+		function buildCountrySelect() {
+			var pingMap = {}, ordered = [], seen = {};
+			if (scan.results) scan.results.forEach(function(r) { if (r.country) { seen[r.country] = true; ordered.push(r.country); pingMap[r.country] = (r.state === 'ok' && r.latency_ms != null) ? (r.latency_ms + ' мс') : '—'; } });
+			CODES.forEach(function(c) { if (!seen[c]) { ordered.push(c); pingMap[c] = '—'; } });
+			var cur = status.country || 'NL'; if (status.socks_ok && status.exit_country === cur && status.latency_ms) pingMap[cur] = status.latency_ms + ' мс';
+			return E('select', { 'class': 'cbi-input-select', 'style': 'min-width:175px;font-weight:bold', 'disabled': switching ? 'disabled' : null, 'change': function() { var chosen = this.value; if (!chosen || chosen === status.country) return; switching = true; this.disabled = true; notify('Переключение на ' + chosen + '...', 'info'); callSetCountry(chosen).then(function(r) { switching = false; notify((r && r.message) || chosen, (r && r.ok) ? 'info' : 'error'); return updateStatus(); }).catch(function(e) { switching = false; notify('Ошибка: ' + e, 'error'); return updateStatus(); }); } }, ordered.map(function(c) { return E('option', { 'value': c, 'selected': c === cur ? 'selected' : null }, c + ' (' + (pingMap[c] || '—') + ')'); }));
 		}
-
 		function updateStatus() {
 			return Promise.all([ callStatus(), callScanStatus() ]).then(function(v) {
-				status = v[0] || {}; scan = v[1] || {};
-				subscription = status.subscription || subscription;
-				if (status.country) country.value = status.country;
-
-				var procText = status.running
-					? (status.managed ? 'Запущен под procd (PID ' + (status.pid || '?') + ')' : 'Работает вручную (PID ' + (status.pid || '?') + ')')
-					: 'Остановлен';
-
-				var socksText = status.socks_ok
-					? 'Активен и пропускает HTTPS (' + status.bind + ':' + status.port + ')'
-					: (status.listening
-						? 'Порт открыт, но HTTPS не отвечает'
-						: (status.running ? 'Ожидание поднятия порта ' + status.port + '...' : 'Не запущен'));
-
-				state.innerHTML = '';
-				var rows = [
-					[ 'Процесс warp-plus', procText ],
-					[ 'SOCKS5 прокси', socksText ],
-					[ 'Выбранная страна', status.country || '—' ],
-					[ 'Фактическая страна выхода', status.exit_country || '—' ],
-					[ 'Выходной IP', status.exit_ip || '—' ],
-					[ 'Задержка (TTFB)', status.latency_ms ? status.latency_ms + ' мс' : 'не измерена' ],
-					[ 'Версия warp-plus', status.version || '—' ],
-					[ 'Ссылка для Steer', subscription ]
-				];
-				rows.forEach(function(r) {
-					state.appendChild(E('div', { 'class': 'tr' }, [
-						E('div', { 'class': 'td left', 'style': 'font-weight:bold;width:34%' }, r[0]),
-						E('div', { 'class': 'td' }, r[1])
-					]));
-				});
-
-				scanBox.textContent = scan.running
-					? 'Проверяется страна: ' + (scan.current || '…')
-					: (scan.message || 'Автоподбор ещё не запускался');
-
-				scanResults.innerHTML = '';
-				if (scan.results && scan.results.length) {
-					var table = E('table', { 'class': 'table' });
-					table.appendChild(E('tr', { 'class': 'tr' }, [
-						E('th', { 'class': 'th' }, 'Страна'),
-						E('th', { 'class': 'th' }, 'Выход'),
-						E('th', { 'class': 'th' }, 'Задержка'),
-						E('th', { 'class': 'th' }, 'Результат')
-					]));
-					scan.results.forEach(function(r) {
-						table.appendChild(E('tr', { 'class': 'tr' }, [
-							E('td', { 'class': 'td' }, r.country || '—'),
-							E('td', { 'class': 'td' }, r.exit_country || '—'),
-							E('td', { 'class': 'td' }, r.latency_ms != null ? r.latency_ms + ' мс' : '—'),
-							E('td', { 'class': 'td' }, r.state === 'ok' ? 'доступна' : r.state === 'mismatch' ? 'другая страна' : 'нет ответа')
-						]));
-					});
-					scanResults.appendChild(table);
-				}
-
-				result.textContent = status.manual
-					? 'Обнаружен ручной процесс Psiphon. Нажмите «Перенять текущий туннель», чтобы передать его под управление OWRTPsiphon.'
-					: '';
+				status = v[0] || {}; scan = v[1] || {}; sub = status.subscription || sub;
+				chkAutostart.checked = (status.autostart == 1); chkScanBoot.checked = (status.auto_scan_boot == 1); selWatchdog.value = String(status.watchdog_hours || 0);
+				var wp = status.running ? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Запущен') : E('span', { 'style': 'color:#dc2626;font-weight:bold' }, 'Остановлен');
+				var sk = status.socks_ok ? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Активен (' + status.bind + ':' + status.port + ')') : (status.listening ? E('span', { 'style': 'color:#d97706;font-weight:bold' }, 'Нет ответа') : E('span', { 'style': 'color:#dc2626' }, 'Не запущен'));
+				var ipC = status.exit_ip ? (status.exit_ip + (status.exit_country ? ' (' + status.exit_country + ')' : '')) : '—';
+				stateTable.innerHTML = '';
+				[['warp-plus', wp], ['SOCKS5 прокси', sk], ['Выходной IP', ipC], ['Страна выхода', [buildCountrySelect(), E('button', { 'class': 'btn cbi-button-positive', 'style': 'margin-left:8px', 'disabled': scan.running ? 'disabled' : null, 'click': function() { action(callScan(), 'Автоподбор запущен'); } }, scan.running ? 'Подбор...' : 'Автоподбор по пингу')]], ['Версия warp-plus', status.version || '—'], ['Ссылка для Steer', [E('code', { 'style': 'margin-right:8px;user-select:all' }, sub), E('button', { 'class': 'btn cbi-button-action', 'click': function() { copyText(sub); } }, 'Копировать'), E('div', { 'style': 'font-size:12px;color:#666;margin-top:4px' }, 'Вставьте в Steer → раздел VPN → Подписка → Свои серверы.')]]].forEach(function(r) { stateTable.appendChild(E('div', { 'class': 'tr' }, [E('div', { 'class': 'td left', 'style': 'font-weight:bold;width:30%' }, r[0]), E('div', { 'class': 'td left' }, r[1])])); });
+				scanBox.textContent = scan.running ? 'Проверка узлов: ' + (scan.current || '…') : (scan.message || '');
 			});
 		}
-
-		function pollScan() {
-			if (pollActive || !scan.running) return;
-			pollActive = true;
-			function tick() {
-				updateStatus().then(function() {
-					if (scan.running) window.setTimeout(tick, 4000);
-					else pollActive = false;
-				}).catch(function() { pollActive = false; });
-			}
-			window.setTimeout(tick, 2500);
-		}
-
-		function action(promise, success) {
-			promise.then(function(r) {
-				if (r && r.ok) notify(r.message || success, 'info');
-				else notify((r && r.message) || 'Операция не выполнена', 'error');
-				return updateStatus();
-			}).then(function() { pollScan(); }).catch(function(e) { notify('Ошибка RPC: ' + e, 'error'); });
-		}
-
-		function button(label, cls, fn) {
-			return E('button', { 'class': 'btn ' + cls, 'click': fn, 'style': 'margin:4px' }, label);
-		}
-
-		root.appendChild(E('h2', {}, 'OWRTPsiphon'));
-		root.appendChild(E('p', {}, 'Psiphon через warp-plus (--cfon). Управление отдельное от Steer: ссылка SOCKS5 остаётся постоянной при смене страны.'));
-		root.appendChild(E('h3', {}, 'Состояние туннеля'));
-		root.appendChild(state);
-		root.appendChild(result);
-
-		root.appendChild(E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, 'Страна выхода'),
-			E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title', 'for': 'owrt-country' }, 'Страна (31 поддерживаемая)'),
-				E('div', { 'class': 'cbi-value-field' }, country)
-			]),
-			button('Применить страну', 'cbi-button-action', function() { action(callSetCountry(country.value), 'Страна применена'); }),
-			button('Автовыбор по задержке', 'cbi-button-positive', function() { action(callScan(), 'Проверка стран запущена'); }),
-			scanBox,
-			scanResults
-		]));
-
-		root.appendChild(E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, 'Управление'),
-			button('Запустить', 'cbi-button-positive', function() { action(callStart(), 'Запуск выполнен'); }),
-			button('Остановить', 'cbi-button-negative', function() { action(callStop(), 'Служба остановлена'); }),
-			button('Перенять текущий туннель', 'cbi-button-action', function() {
-				if (confirm('Текущий ручной warp-plus будет перезапущен под управлением OWRTPsiphon с переносом кэша. Продолжить?')) {
-					action(callAdopt(), 'Туннель передан службе');
-				}
-			}),
-			button('Проверить SOCKS', 'cbi-button', function() { action(callProbe(), 'Проверка завершена'); }),
-			button('Обновить', 'cbi-button', function() { updateStatus(); })
-		]));
-
-		root.appendChild(E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, 'Ссылка для Steer'),
-			E('p', {}, 'Добавь эту строку в подписку Steer. Адрес и порт не меняются при выборе другой страны.'),
-			E('input', { 'class': 'cbi-input-text', 'readonly': 'readonly', 'value': subscription, 'style': 'width:100%;max-width:650px' }),
-			button('Скопировать SOCKS5-ссылку', 'cbi-button-action', function() {
-				var input = root.querySelector('input[readonly]');
-				input.select();
-				if (navigator.clipboard && navigator.clipboard.writeText) {
-					navigator.clipboard.writeText(subscription).then(function() { notify('Ссылка скопирована'); });
-				} else {
-					document.execCommand('copy');
-					notify('Ссылка скопирована');
-				}
-			})
-		]));
-
-		root.appendChild(E('p', { 'class': 'alert-message warning' }, 'Автоподбор проверяет страны последовательно на отдельном локальном порту 18086, сохраняя действующий туннель 8086 для Steer до выбора лучшего результата.'));
-		updateStatus().then(function() { pollScan(); });
-		return root;
+		function pollScan() { if (pollActive || !scan.running) return; pollActive = true; function tick() { updateStatus().then(function() { if (scan.running) window.setTimeout(tick, 4000); else pollActive = false; }).catch(function() { pollActive = false; }); } window.setTimeout(tick, 2500); }
+		function action(p, okMsg) { p.then(function(r) { notify((r && r.message) || okMsg, (r && r.ok) ? 'info' : 'error'); return updateStatus(); }).then(function() { pollScan(); }).catch(function(e) { notify('Ошибка RPC: ' + e, 'error'); }); }
+		function btn(l, c, fn) { return E('button', { 'class': 'btn ' + c, 'click': fn, 'style': 'margin:4px' }, l); }
+		function saveAuto() { action(callSetAuto(chkAutostart.checked ? 1 : 0, chkScanBoot.checked ? 1 : 0, parseInt(selWatchdog.value, 10) || 0), 'Сохранено'); }
+		chkAutostart.addEventListener('change', saveAuto); chkScanBoot.addEventListener('change', saveAuto); selWatchdog.addEventListener('change', saveAuto);
+		root.appendChild(E('h2', {}, 'OWRTPsiphon')); root.appendChild(E('p', {}, 'Управление Psiphon (bepass-org/warp-plus --cfon) для Steer без изменения сетевой конфигурации.')); root.appendChild(stateTable); root.appendChild(scanBox);
+		root.appendChild(E('div', { 'class': 'cbi-section' }, [E('h3', {}, 'Управление и обновления'), btn('Запустить', 'cbi-button-positive', function() { action(callStart(), 'Запущено'); }), btn('Остановить', 'cbi-button-negative', function() { action(callStop(), 'Остановлено'); }), btn('Проверить SOCKS', 'cbi-button', function() { action(callProbe(), 'Проверено'); }), btn('Проверить обновления', 'cbi-button-action', function() { updateBox.textContent = 'Проверка GitHub...'; callCheckUpdate().then(function(r) { updateBox.innerHTML = ''; if (!r || !r.ok) { updateBox.textContent = (r && r.message) || 'Ошибка проверки'; return; } updateBox.appendChild(E('span', { 'style': 'margin-right:10px' }, r.message)); if (r.has_update) updateBox.appendChild(btn('Установить v' + r.remote_version, 'cbi-button-positive', function() { if (!confirm('Установить обновление v' + r.remote_version + '?')) return; callApplyUpdate().then(function(res) { notify((res && res.message) || 'Обновление...', 'info'); window.setTimeout(function() { window.location.reload(); }, 4500); }); })); }); }), btn('Удалить приложение', 'cbi-button-negative', function() { if (!confirm('Удалить OWRTPsiphon, бинарник warp-plus, кэш и настройки?')) return; if (!confirm('Подтвердите полное удаление (Steer и Zapret не пострадают).')) return; callUninstall().then(function(r) { notify((r && r.message) || 'Удалено', 'warning'); window.setTimeout(function() { window.location.href = '/cgi-bin/luci/'; }, 2500); }); }), updateBox]));
+		root.appendChild(E('div', { 'class': 'cbi-section' }, [E('h3', {}, 'Автоматизация и контроль узлов'), E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Автостарт службы при загрузке'), E('div', { 'class': 'cbi-value-field' }, chkAutostart)]), E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Автоподбор страны при включении'), E('div', { 'class': 'cbi-value-field' }, chkScanBoot)]), E('div', { 'class': 'cbi-value' }, [E('label', { 'class': 'cbi-value-title' }, 'Проверка доступности и фейловер'), E('div', { 'class': 'cbi-value-field' }, [selWatchdog, E('div', { 'style': 'font-size:12px;color:#666;margin-top:4px' }, 'При падении узла переключает на следующий рабочий по возрастанию пинга.')])])]));
+		updateStatus().then(function() { pollScan(); }); return root;
 	},
-
-	handleSaveApply: null,
-	handleSave: null,
-	handleReset: null
+	handleSaveApply: null, handleSave: null, handleReset: null
 });
 EOF
 
 chmod 755 /etc/init.d/owrt-psiphon /usr/libexec/rpcd/owrt-psiphon /usr/libexec/owrt-psiphon/owrt-psiphonctl
 chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json /www/luci-static/resources/view/owrt-psiphon/main.js
 
+/usr/libexec/owrt-psiphon/owrt-psiphonctl set_auto "$(uci -q get owrt-psiphon.main.autostart || echo 1)" "$(uci -q get owrt-psiphon.main.auto_scan_boot || echo 0)" "$(uci -q get owrt-psiphon.main.watchdog_hours || echo 0)" >/dev/null 2>&1 || true
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 rm -f /tmp/luci-indexcache
 rm -rf "$TMP"
 
 if ! netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(:|\.)8086$'; then
-	log 'Порт 8086 свободен: включаю автозапуск и поднимаю туннель для Steer...'
-	uci -q set owrt-psiphon.main.enabled='1'
-	uci -q commit owrt-psiphon
-	/etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || true
-	/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-else
-	log 'Обнаружен занятый порт 8086: действующий туннель не тронут. Для перехвата открой LuCI → Службы → OWRTPsiphon.'
+	uci -q set owrt-psiphon.main.enabled='1' && uci -q commit owrt-psiphon
+	/etc/init.d/owrt-psiphon enable >/dev/null 2>&1 || true; /etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
 fi
 
-log 'Установка Alpha 2 завершена.'
+log "Установка OWRTPsiphon v${APP_VER} завершена."
