@@ -32,7 +32,6 @@ fi
 mkdir -p "$TMP" "$APP" "$APP/cache"
 printf '%s\n' "$APP_VER" > "$APP/app.version"
 
-# Проверяем, нужно ли скачивать бинарник (если его нет или если запрошено обновление)
 if [ ! -x "$APP/warp-plus" ] || [ "${FORCE_WARP_UPDATE:-0}" = "1" ]; then
 	log "Загрузка warp-plus v${VERSION}..."
 	curl -fL --retry 3 --connect-timeout 20 "$ASSET" -o "$TMP/wp.zip" || fail 'Ошибка загрузки warp-plus.'
@@ -41,9 +40,9 @@ if [ ! -x "$APP/warp-plus" ] || [ "${FORCE_WARP_UPDATE:-0}" = "1" ]; then
 	command -v unzip >/dev/null 2>&1 || apk add --no-cache unzip
 	unzip -o "$TMP/wp.zip" -d "$TMP/u" >/dev/null
 	cp "$(find "$TMP/u" -type f -name warp-plus | head -1)" "$APP/warp-plus" && chmod 755 "$APP/warp-plus"
+	printf '%s\n' "$VERSION" > "$APP/warp.version"
 fi
 
-# Создание конфига, если его нет
 if [ ! -f /etc/config/owrt-psiphon ]; then
 	printf "config owrt-psiphon 'main'\n\toption enabled '1'\n\toption autostart '1'\n\toption auto_scan_boot '0'\n\toption watchdog_hours '0'\n\toption country 'NL'\n\toption last_good_country 'NL'\n\toption bind '192.168.1.1'\n\toption port '8086'\n\toption endpoint '188.114.99.150:1701'\n\toption test_url 'http://example.com'\n" > /etc/config/owrt-psiphon
 else
@@ -127,7 +126,7 @@ status() {
 		socks_ok=true; exit_country="$(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"; latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 	fi
-	version="v1.2.6"; [ -x "$BIN" ] && v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)" && [ -n "$v" ] && version="$v"
+	version="v$(cat "$APP/warp.version" 2>/dev/null | tr -d '\r\n' || echo "1.2.6")"
 	app_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.3)"
 	autostart="$(uci -q get ${CONFIG}.autostart || echo 1)"; auto_scan_boot="$(uci -q get ${CONFIG}.auto_scan_boot || echo 0)"; watchdog_hours="$(uci -q get ${CONFIG}.watchdog_hours || echo 0)"
 	sub="socks5://${BIND}:${PORT}#OWRTPsiphon"
@@ -194,7 +193,7 @@ set_auto() {
 }
 
 probe() { if probe_internal; then reply true "SOCKS5 активен: $(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'") ($(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'")), $(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'") мс"; else rm -f "$PROBE_FILE"; reply false 'SOCKS5 не отвечает'; return 1; fi; }
-scan_status() { [ -s "$SCANFILE" ] && cat "$SCANFILE" || printf '{"running":false,"message":"Автоподбор ещё не запускался","results":[]}\n'; }
+scan_status() { [ -s "$SCANFILE" ] && cat "$SCANFILE" || printf '{"running":false,"message":"","results":[]}\n'; }
 scan_start() { [ -x "$BIN" ] || { reply false 'Бинарник не найден'; return 1; }; [ -s "$SCAN_PIDFILE" ] && kill -0 "$(cat "$SCAN_PIDFILE" 2>/dev/null)" 2>/dev/null && { reply false 'Уже выполняется'; return 1; }; "$0" _scan </dev/null >/dev/null 2>&1 & echo $! > "$SCAN_PIDFILE"; reply true 'Автоподбор запущен'; }
 
 build_sorted_json() {
@@ -283,12 +282,25 @@ return view.extend({
 		function copyText(txt) { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(function() { notify('Скопировано: ' + txt); }); else { var ta = E('textarea', { 'style': 'position:fixed;opacity:0' }, txt); document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); notify('Скопировано: ' + txt); } }
 		
 		function buildCountrySelect() {
-			var pingMap = {}, ordered = [], seen = {};
-			if (scan.results) scan.results.forEach(function(r) { if (r.country) { seen[r.country] = true; ordered.push(r.country); pingMap[r.country] = (r.state === 'ok' && r.latency_ms != null) ? (r.latency_ms + ' мс') : '—'; } });
-			CODES.forEach(function(c) { if (!seen[c]) { ordered.push(c); pingMap[c] = '—'; } });
-			var cur = status.country || 'NL'; if (status.socks_ok && status.exit_country === cur && status.latency_ms) pingMap[cur] = status.latency_ms + ' мс';
-			var best = (scan.best && scan.best === cur) ? ' (Лучший)' : '';
-			var opts = ordered.map(function(c) { return E('option', { 'value': c, 'selected': c === cur ? 'selected' : null }, c + ' — ' + (COUNTRIES[c] || c) + ' (' + (pingMap[c] || '—') + ')' + (c === cur ? best : '')); });
+			var available = {};
+			if (scan.results) scan.results.forEach(function(r) { available[r.country] = r; });
+			CODES.forEach(function(c) { if (!available[c]) available[c] = { country: c, latency_ms: null, state: 'fail' }; });
+			
+			var ordered = Object.keys(available);
+			ordered.sort(function(a, b) {
+				var msA = available[a].latency_ms || 999999;
+				var msB = available[b].latency_ms || 999999;
+				if (msA !== msB) return msA - msB;
+				return a.localeCompare(b);
+			});
+
+			var cur = status.country || 'NL';
+			var opts = ordered.map(function(c) { 
+				var lat = available[c].latency_ms != null ? available[c].latency_ms + ' мс' : '—';
+				var best = (scan.best && scan.best === c) ? ' (Лучший)' : '';
+				return E('option', { 'value': c, 'selected': c === cur ? 'selected' : null }, c + ' — ' + (COUNTRIES[c] || c) + ' (' + lat + ')' + best);
+			});
+
 			return E('div', { 'style': 'display:flex; gap:8px; flex-wrap:wrap; align-items:center;' }, [
 				E('select', { 'class': 'cbi-input-select', 'style': 'flex:1; min-width:200px;', 'disabled': switching ? 'disabled' : null, 'change': function() { var chosen = this.value; if (!chosen || chosen === status.country) return; switching = true; this.disabled = true; notify('Переключение на ' + chosen + '...', 'info'); callSetCountry(chosen).then(function(r) { switching = false; notify((r && r.message) || chosen, (r && r.ok) ? 'info' : 'error'); return updateStatus(); }).catch(function(e) { switching = false; notify('Ошибка: ' + e, 'error'); return updateStatus(); }); } }, opts),
 				E('button', { 'class': 'btn cbi-button-positive', 'style': 'white-space:nowrap; margin:0;', 'disabled': scan.running ? 'disabled' : null, 'click': function() { action(callScan(), 'Автоподбор запущен'); } }, scan.running ? 'Подбор...' : 'Автоподбор')
@@ -296,9 +308,9 @@ return view.extend({
 		}
 
 		var stateRows = E('div', {});
-		var scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic; text-align:center;' });
-		var updateAppBox = E('div', { 'style': 'margin-top:8px' });
-		var updateWarpBox = E('div', { 'style': 'margin-top:8px' });
+		var scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic; text-align:center; color:#666;' });
+		var updateAppBox = E('div', { 'style': 'margin-top:4px; margin-bottom:12px;' });
+		var updateWarpBox = E('div', { 'style': 'margin-top:4px;' });
 
 		function updateStatus() {
 			return Promise.all([ callStatus(), callScanStatus() ]).then(function(v) {
@@ -327,13 +339,13 @@ return view.extend({
 						E('div', { 'class': 'cbi-value-field' }, r[1])
 					])); 
 				});
-				scanBox.textContent = scan.running ? 'Проверка узлов: ' + (scan.current || '…') : (scan.message || '');
+				scanBox.textContent = scan.running ? 'Пожалуйста, подождите. Идет проверка стран...' : '';
 			});
 		}
 
 		function pollScan() { if (pollActive || !scan.running) return; pollActive = true; function tick() { updateStatus().then(function() { if (scan.running) window.setTimeout(tick, 4000); else pollActive = false; }).catch(function() { pollActive = false; }); } window.setTimeout(tick, 2500); }
 		function action(p, okMsg) { p.then(function(r) { notify((r && r.message) || okMsg, (r && r.ok) ? 'info' : 'error'); return updateStatus(); }).then(function() { pollScan(); }).catch(function(e) { notify('Ошибка RPC: ' + e, 'error'); }); }
-		function btn(l, c, fn) { return E('button', { 'class': 'btn ' + c, 'click': fn, 'style': 'margin:4px' }, l); }
+		function btn(l, c, fn) { return E('button', { 'class': 'btn ' + c, 'click': fn, 'style': 'margin:4px 0;' }, l); }
 		function saveAuto() { action(callSetAuto(chkAutostart.checked ? 1 : 0, chkScanBoot.checked ? 1 : 0, parseInt(selWatchdog.value, 10) || 0), 'Настройки сохранены'); }
 		chkAutostart.addEventListener('change', saveAuto); chkScanBoot.addEventListener('change', saveAuto); selWatchdog.addEventListener('change', saveAuto);
 
@@ -351,7 +363,7 @@ return view.extend({
 
 		root.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, 'Управление и обновления'), 
-			E('div', { 'style': 'margin-bottom:12px;' }, [
+			E('div', { 'style': 'margin-bottom:12px; display:flex; flex-wrap:wrap; gap:8px;' }, [
 				btn('Запустить', 'cbi-button-positive', function() { action(callStart(), 'Запущено'); }), 
 				btn('Остановить', 'cbi-button-negative', function() { action(callStop(), 'Остановлено'); }), 
 				btn('Проверить SOCKS', 'cbi-button', function() { action(callProbe(), 'Проверено'); }), 
@@ -359,16 +371,16 @@ return view.extend({
 			]),
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, 'Версия OWRTPsiphon'), 
-				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:8px; flex-wrap:wrap; align-items:center;' }, [
-					E('span', { 'style': 'font-weight:bold;' }, 'v' + (status.app_version || '0.3.3')), 
+				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:12px; align-items:center;' }, [
+					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, 'v' + (status.app_version || '0.3.3')), 
 					E('button', { 'class': 'btn cbi-button-action', 'style': 'margin:0;', 'click': function() { updateAppBox.textContent = 'Проверка GitHub...'; callCheckUpdate().then(function(r) { updateAppBox.innerHTML = ''; if (!r || !r.ok) { updateAppBox.textContent = (r && r.message) || 'Ошибка проверки'; return; } updateAppBox.appendChild(E('span', { 'style': 'margin-right:10px' }, r.message)); if (r.has_update) updateAppBox.appendChild(btn('Установить v' + r.remote_version, 'cbi-button-positive', function() { if (!confirm('Установить обновление v' + r.remote_version + '?')) return; callApplyUpdate().then(function(res) { notify((res && res.message) || 'Обновление...', 'info'); window.setTimeout(function() { window.location.reload(); }, 4500); }); })); }); } }, 'Проверить')
 				])
 			]),
 			updateAppBox,
 			E('div', { 'class': 'cbi-value', 'style': 'margin-top:8px;' }, [
 				E('label', { 'class': 'cbi-value-title' }, 'Версия warp-plus'), 
-				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:8px; flex-wrap:wrap; align-items:center;' }, [
-					E('span', { 'style': 'font-weight:bold;' }, status.version || '—'), 
+				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:12px; align-items:center;' }, [
+					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, status.version || 'v1.2.6'), 
 					E('button', { 'class': 'btn cbi-button-action', 'style': 'margin:0;', 'click': function() { updateWarpBox.textContent = 'Проверка GitHub API...'; callCheckWarpUpdate().then(function(r) { updateWarpBox.innerHTML = ''; if (!r || !r.ok) { updateWarpBox.textContent = (r && r.message) || 'Ошибка проверки'; return; } updateWarpBox.appendChild(E('span', { 'style': 'margin-right:10px' }, r.message)); if (r.has_update) updateWarpBox.appendChild(btn('Обновить ' + r.remote_version, 'cbi-button-positive', function() { if (!confirm('Обновить warp-plus до ' + r.remote_version + '?')) return; callApplyWarpUpdate().then(function(res) { notify((res && res.message) || 'Обновление...', 'info'); window.setTimeout(function() { window.location.reload(); }, 4500); }); })); }); } }, 'Проверить')
 				])
 			]),
@@ -387,6 +399,7 @@ chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.
 /usr/libexec/owrt-psiphon/owrt-psiphonctl set_auto "$(uci -q get owrt-psiphon.main.autostart || echo 1)" "$(uci -q get owrt-psiphon.main.auto_scan_boot || echo 0)" "$(uci -q get owrt-psiphon.main.watchdog_hours || echo 0)" >/dev/null 2>&1 || true
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 rm -f /tmp/luci-indexcache
+/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 rm -rf "$TMP"
 
 if ! netstat -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(:|\.)8086$'; then
