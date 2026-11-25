@@ -1,12 +1,12 @@
 #!/bin/sh
-# VERSION=0.3.9
-# OWRTPsiphon 0.3.9 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
-# Repository: https://github.com/Tan4ig/owrt-psiphon
+# VERSION=0.4.0
+# OWRTPsiphon 0.4.0 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
+# Repository: https://github.com
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
-# Upstream engine: https://github.com/bepass-org/warp-plus (MIT License).
+# Upstream engine: https://github.com (MIT License).
 set -eu
 
-APP_VER="0.3.9"
+APP_VER="0.4.0"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
 VERSION="1.2.6"
@@ -60,7 +60,6 @@ if [ ! -x "$APP/warp-plus" ]; then
     [ "$UNZIP_ADDED" = 0 ] || apk del unzip >/dev/null 2>&1 || true
     [ "$SHA_ADDED" = 0 ] || apk del coreutils-sha256sum >/dev/null 2>&1 || true
 fi
-
 if [ ! -f /etc/config/owrt-psiphon ]; then
     cat << 'EOF' > /etc/config/owrt-psiphon
 config owrt-psiphon 'main'
@@ -91,6 +90,7 @@ else
 fi
 
 mkdir -p /etc/init.d /usr/libexec/rpcd /usr/libexec/owrt-psiphon /usr/share/luci/menu.d /usr/share/rpcd/acl.d /www/luci-static/resources/view/owrt-psiphon
+rm -f /www/luci-static/resources/view/owrt-psiphon/main*.js
 
 cat << 'EOF' > /etc/init.d/owrt-psiphon
 #!/bin/sh /etc/rc.common
@@ -152,7 +152,6 @@ service_triggers() {
 	procd_add_reload_trigger owrt-psiphon
 }
 EOF
-
 cat << 'EOF' > /usr/libexec/owrt-psiphon/owrt-psiphonctl
 #!/bin/sh
 APP=/opt/owrt-psiphon
@@ -239,7 +238,6 @@ ver_gt() {
 		exit 1;
 	}'
 }
-
 probe_internal() {
 	port_listening || { rm -f "$PROBE_FILE"; return 1; }
 	out="$(curl -4 -fsS --max-time 10 --socks5-hostname "${BIND}:${PORT}" -w '\n%{time_starttransfer}' https://ipinfo.io 2>/dev/null)" || { rm -f "$PROBE_FILE"; return 1; }
@@ -292,7 +290,7 @@ status() {
 	else
 		rm -f "$PROBE_FILE"
 	fi
-	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.3.9)"
+	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.0)"
 	version="v1.2.6"
 	if [ -x "$BIN" ]; then
 		v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
@@ -312,7 +310,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.3.9)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.0)"
 	remote_head="$(curl -fsSL --max-time 8 "$REPO_URL" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -336,7 +334,6 @@ apply_update() {
 		(sleep 1; sh "$tmp_upd" >/dev/null 2>&1; rm -f "$tmp_upd") </dev/null >/dev/null 2>&1 &
 	fi
 }
-
 start_service() {
 	if managed_pid >/dev/null; then
 		if wait_socks_ready 10; then reply true 'Служба уже запущена'
@@ -417,7 +414,6 @@ set_auto() {
 	sync_cron
 	reply true 'Настройки автоматизации сохранены'
 }
-
 probe() {
 	if probe_internal; then
 		reply true "SOCKS5 активен: $(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'") ($(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'")), $(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'") мс"
@@ -557,7 +553,6 @@ scan_worker() {
 		write_scan_atomic "{\"running\":false,\"current\":\"\",\"best\":\"\",\"best_ms\":null,\"message\":\"Рабочих узлов не найдено\",\"results\":$final_json}"
 	fi
 }
-
 watchdog() {
 	[ "$(uci -q get ${CONFIG}.enabled || echo 0)" = "1" ] || return 0
 	acquire_lock "$WATCHDOG_LOCK" || return 0
@@ -645,11 +640,10 @@ case "$1" in
         ;;
 esac
 EOF
-
-printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
+printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main-%s"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' "$APP_VER" > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
 printf '{"luci-app-owrt-psiphon":{"description":"OWRTPsiphon LuCI access","read":{"ubus":{"owrt-psiphon":["status","scan_status","check_update"]}},"write":{"ubus":{"owrt-psiphon":["start","stop","set_country","set_auto","probe","scan","apply_update","uninstall"]}}}}\n' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
 
-cat << 'EOF' > /www/luci-static/resources/view/owrt-psiphon/main.js
+cat << 'EOF' > "/www/luci-static/resources/view/owrt-psiphon/main-${APP_VER}.js"
 'use strict';
 'require view';
 'require rpc';
@@ -704,7 +698,6 @@ return view.extend({
 				notify('Скопировано: ' + txt);
 			}
 		}
-
 		function buildCountrySelect() {
 			var pingMap = {}, ordered = [], seen = {};
 			if (scan.results) {
@@ -788,7 +781,7 @@ return view.extend({
 							'click': function() { action(callScan(), 'Автоподбор запущен'); }
 						}, scan.running ? 'Подбор...' : 'Автоподбор по пингу')
 					]],
-					['Версия OWRTPsiphon', 'v' + (status.app_version || '0.3.9')],
+					['Версия OWRTPsiphon', 'v' + (status.app_version || '0.4.0')],
 					['Версия warp-plus', status.version || '—'],
 					['Ссылка для Steer', [
 						E('code', { 'style': 'margin-right:8px;user-select:all' }, sub),
@@ -805,7 +798,6 @@ return view.extend({
 				scanBox.textContent = scan.running ? 'Проверка узлов: ' + (scan.current || '…') : (scan.message || '');
 			});
 		}
-
 		function pollScan() {
 			if (pollActive || !scan.running) return;
 			pollActive = true;
@@ -930,7 +922,7 @@ EOF
 
 printf '%s\n' "$APP_VER" > "$APP/app.version"
 chmod 755 /etc/init.d/owrt-psiphon /usr/libexec/rpcd/owrt-psiphon /usr/libexec/owrt-psiphon/owrt-psiphonctl
-chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json /www/luci-static/resources/view/owrt-psiphon/main.js
+chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json "/www/luci-static/resources/view/owrt-psiphon/main-${APP_VER}.js"
 
 /usr/libexec/owrt-psiphon/owrt-psiphonctl set_auto \
     "$(uci -q get owrt-psiphon.main.autostart || echo 1)" \
