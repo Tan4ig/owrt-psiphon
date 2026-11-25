@@ -17,10 +17,12 @@
 Выполните одну из команд по SSH на вашем роутере:
 
 Используя `curl`:
-curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
+
+    curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
 
 Используя `wget` (если `curl` не установлен):
-wget -O /tmp/owrt-install.sh "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" && sh /tmp/owrt-install.sh
+
+    wget -O /tmp/owrt-install.sh "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" && sh /tmp/owrt-install.sh
 
 После установки откройте **Службы → OWRTPsiphon** в LuCI. 
 Чтобы использовать в **Steer**, вставьте `socks5://192.168.1.1:8086#OWRTPsiphon` в **Steer → VPN → Подписка → Свои серверы**.
