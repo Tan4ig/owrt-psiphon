@@ -616,7 +616,7 @@ cat << 'EOF' > /usr/libexec/rpcd/owrt-psiphon
 CTL="/usr/libexec/owrt-psiphon/owrt-psiphonctl"
 case "$1" in
     list)
-        printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"NL"},"set_auto":{"autostart":1,"auto_scan_boot":0,"watchdog_hours":0},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"uninstall":{}}\n'
+        printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"NL"},"set_auto":{"autostart":"1","auto_scan_boot":"0","watchdog_hours":"0"},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"uninstall":{}}\n'
         ;;
     call)
         read -r input || input="{}"
@@ -632,7 +632,7 @@ case "$1" in
                 as="$(jsonfilter -s "$input" -e '@.autostart' 2>/dev/null || true)"
                 sb="$(jsonfilter -s "$input" -e '@.auto_scan_boot' 2>/dev/null || true)"
                 wh="$(jsonfilter -s "$input" -e '@.watchdog_hours' 2>/dev/null || true)"
-                case "$as" in 0|1) ;; *) printf '{"ok":false,"message":"Некорректный autostart"}\n'; exit 1 ;; esac
+                [ "$as" = "true" ] && as="1"; [ "$as" = "false" ] && as="0"; [ "$sb" = "true" ] && sb="1"; [ "$as" = "true" ] && as="1"; [ "$as" = "false" ] && as="0"; [ "$sb" = "true" ] && sb="1"; [ "$sb" = "false" ] && sb="0"; case "$as" in 0|1) ;; *) printf '{"ok":false,"message":"Некорректный autostart"}\n'; exit 1 ;; esac
                 case "$sb" in 0|1) ;; *) printf '{"ok":false,"message":"Некорректный auto_scan_boot"}\n'; exit 1 ;; esac
                 case "$wh" in 0|1|6|12|24) ;; *) printf '{"ok":false,"message":"Некорректный watchdog_hours"}\n'; exit 1 ;; esac
                 exec "$CTL" set_auto "$as" "$sb" "$wh"
@@ -834,11 +834,12 @@ return view.extend({
 
 		function saveAuto() {
 			action(callSetAuto(
-				chkAutostart.checked ? 1 : 0,
-				chkScanBoot.checked ? 1 : 0,
-				parseInt(selWatchdog.value, 10) || 0
+				chkAutostart.checked ? '1' : '0',
+				chkScanBoot.checked ? '1' : '0',
+				String(parseInt(selWatchdog.value, 10) || 0)
 			), 'Настройки автоматизации сохранены');
 		}
+
 
 		chkAutostart.addEventListener('change', saveAuto);
 		chkScanBoot.addEventListener('change', saveAuto);
