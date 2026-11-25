@@ -1,12 +1,12 @@
 #!/bin/sh
-# VERSION=0.4.2
-# OWRTPsiphon 0.4.2 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.4.3
+# OWRTPsiphon 0.4.3 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: Tan4ig/owrt-psiphon
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: bepass-org/warp-plus (MIT License).
 set -eu
 
-APP_VER="0.4.2"
+APP_VER="0.4.3"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
 VERSION="1.2.6"
@@ -292,7 +292,7 @@ status() {
 	else
 		rm -f "$PROBE_FILE"
 	fi
-	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.2)"
+	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.3)"
 	version="v1.2.6"
 	if [ -x "$BIN" ]; then
 		v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
@@ -312,7 +312,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.2)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.3)"
 	remote_head="$(curl -fsSL --max-time 8 "$REPO_URL" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -619,7 +619,7 @@ case "$1" in
         printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"NL"},"set_auto":{"autostart":"1","auto_scan_boot":"0","watchdog_hours":"0"},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"uninstall":{}}\n'
         ;;
     call)
-        read -r input || input="{}"
+        input="$(cat)"; [ -n "$input" ] || input="{}"
         case "$2" in
             status|start|stop|probe|scan|scan_status|check_update|apply_update|uninstall)
                 exec "$CTL" "$2"
@@ -783,7 +783,7 @@ return view.extend({
 							'click': function() { action(callScan(), 'Автоподбор запущен'); }
 						}, scan.running ? 'Подбор...' : 'Автоподбор по пингу')
 					]],
-					['Версия OWRTPsiphon', 'v' + (status.app_version || '0.4.2')],
+					['Версия OWRTPsiphon', 'v' + (status.app_version || '0.4.3')],
 					['Версия warp-plus', status.version || '—'],
 					['Ссылка для Steer', [
 						E('code', { 'style': 'margin-right:8px;user-select:all' }, sub),
