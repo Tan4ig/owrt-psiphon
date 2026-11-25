@@ -1,9 +1,9 @@
 #!/bin/sh
-# VERSION=0.3.3
-# OWRTPsiphon Alpha 3.3 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.3.4
+# OWRTPsiphon Alpha 3.4 — lightweight LuCI controller for bepass-org/warp-plus (--cfon).
 set -eu
 
-APP_VER="0.3.3"
+APP_VER="0.3.4"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install"
 VERSION="1.2.6"
@@ -127,7 +127,7 @@ status() {
 		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"; latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 	fi
 	version="v$(cat "$APP/warp.version" 2>/dev/null | tr -d '\r\n' || echo "1.2.6")"
-	app_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.3)"
+	app_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.4)"
 	autostart="$(uci -q get ${CONFIG}.autostart || echo 1)"; auto_scan_boot="$(uci -q get ${CONFIG}.auto_scan_boot || echo 0)"; watchdog_hours="$(uci -q get ${CONFIG}.watchdog_hours || echo 0)"
 	sub="socks5://${BIND}:${PORT}#OWRTPsiphon"
 	printf '{"ok":true,"running":%s,"listening":%s,"socks_ok":%s,"pid":"%s","country":"%s","bind":"%s","port":%s,"version":"%s","app_version":"%s","subscription":"%s","exit_country":"%s","exit_ip":"%s","latency_ms":"%s","autostart":%s,"auto_scan_boot":%s,"watchdog_hours":%s,"scan_running":%s}\n' \
@@ -135,7 +135,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.3)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r' || echo 0.3.4)"
 	remote_head="$(curl -fsSL --max-time 8 "$REPO_URL" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -372,7 +372,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, 'Версия OWRTPsiphon'), 
 				E('div', { 'class': 'cbi-value-field', 'style': 'display:flex; gap:12px; align-items:center;' }, [
-					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, 'v' + (status.app_version || '0.3.3')), 
+					E('span', { 'style': 'font-weight:bold; min-width:60px;' }, 'v' + (status.app_version || '0.3.4')), 
 					E('button', { 'class': 'btn cbi-button-action', 'style': 'margin:0;', 'click': function() { updateAppBox.textContent = 'Проверка GitHub...'; callCheckUpdate().then(function(r) { updateAppBox.innerHTML = ''; if (!r || !r.ok) { updateAppBox.textContent = (r && r.message) || 'Ошибка проверки'; return; } updateAppBox.appendChild(E('span', { 'style': 'margin-right:10px' }, r.message)); if (r.has_update) updateAppBox.appendChild(btn('Установить v' + r.remote_version, 'cbi-button-positive', function() { if (!confirm('Установить обновление v' + r.remote_version + '?')) return; callApplyUpdate().then(function(res) { notify((res && res.message) || 'Обновление...', 'info'); window.setTimeout(function() { window.location.reload(); }, 4500); }); })); }); } }, 'Проверить')
 				])
 			]),
