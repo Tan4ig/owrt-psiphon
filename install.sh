@@ -1,15 +1,20 @@
 #!/bin/sh
-# VERSION=0.4.8
-# OWRTPsiphon 0.4.8 — universal LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.4.9
+# OWRTPsiphon 0.4.9 — universal LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: Tan4ig/owrt-psiphon
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: bepass-org/warp-plus (MIT License).
 set -eu
 
-APP_VER="0.4.8"
+APP_VER="0.4.9"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
 VERSION="1.2.6"
+
+NO_LUCI=0
+if [ "${1:-}" = "--no-luci" ]; then
+    NO_LUCI=1
+fi
 
 log() { printf '\033[1;32m[OWRTPsiphon]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; rm -rf "$TMP"; exit 1; }
@@ -19,77 +24,39 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 [ "$(id -u)" = 0 ] || fail 'Запустите от root.'
 
 pkg_install() {
-    if command -v apk >/dev/null 2>&1; then
-        apk add --no-cache "$1"
+    if command -v apk >/dev/null 2>&1; then apk add --no-cache "$1"
     elif command -v opkg >/dev/null 2>&1; then
         [ -f "$TMP/.opkg_updated" ] || { opkg update >/dev/null 2>&1 || true; touch "$TMP/.opkg_updated"; }
         opkg install "$1"
-    else
-        return 1
-    fi
+    else return 1; fi
 }
 
 pkg_remove() {
-    if command -v apk >/dev/null 2>&1; then
-        apk del "$1" >/dev/null 2>&1 || true
-    elif command -v opkg >/dev/null 2>&1; then
-        opkg remove "$1" >/dev/null 2>&1 || true
-    fi
+    if command -v apk >/dev/null 2>&1; then apk del "$1" >/dev/null 2>&1 || true
+    elif command -v opkg >/dev/null 2>&1; then opkg remove "$1" >/dev/null 2>&1 || true; fi
 }
 
 detect_arch() {
     m="$(uname -m)"
     case "$m" in
-        aarch64|arm64)
-            WP_ARCH="linux-arm64"
-            WP_ELF_MACH="183"
-            WP_SHA256="c0b430c117eaa33513fa012aca983303ee88a4bda0f935dc62ff016109e492f3"
-            ;;
-        armv7*|armhf)
-            WP_ARCH="linux-armv7"
-            WP_ELF_MACH="40"
-            WP_SHA256=""
-            ;;
-        armv6*|arm*)
-            WP_ARCH="linux-armv6"
-            WP_ELF_MACH="40"
-            WP_SHA256=""
-            ;;
-        mips64el|mips64le)
-            WP_ARCH="linux-mips64le"
-            WP_ELF_MACH="8"
-            WP_SHA256=""
-            ;;
+        aarch64|arm64) WP_ARCH="linux-arm64"; WP_ELF_MACH="183"; WP_SHA256="c0b430c117eaa33513fa012aca983303ee88a4bda0f935dc62ff016109e492f3" ;;
+        armv7*|armhf) WP_ARCH="linux-armv7"; WP_ELF_MACH="40"; WP_SHA256="" ;;
+        armv6*|arm*) WP_ARCH="linux-armv6"; WP_ELF_MACH="40"; WP_SHA256="" ;;
+        mips64el|mips64le) WP_ARCH="linux-mips64le"; WP_ELF_MACH="8"; WP_SHA256="" ;;
         mips64)
             endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
             if [ "$endian" = "1" ]; then WP_ARCH="linux-mips64le"; else WP_ARCH="linux-mips64"; fi
-            WP_ELF_MACH="8"
-            WP_SHA256=""
+            WP_ELF_MACH="8"; WP_SHA256=""
             ;;
-        mipsel|mipsle)
-            WP_ARCH="linux-mipsle"
-            WP_ELF_MACH="8"
-            WP_SHA256=""
-            ;;
+        mipsel|mipsle) WP_ARCH="linux-mipsle"; WP_ELF_MACH="8"; WP_SHA256="" ;;
         mips)
             endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
             if [ "$endian" = "1" ]; then WP_ARCH="linux-mipsle"; else WP_ARCH="linux-mips"; fi
-            WP_ELF_MACH="8"
-            WP_SHA256=""
+            WP_ELF_MACH="8"; WP_SHA256=""
             ;;
-        x86_64|amd64)
-            WP_ARCH="linux-amd64"
-            WP_ELF_MACH="62"
-            WP_SHA256=""
-            ;;
-        i386|i686)
-            WP_ARCH="linux-386"
-            WP_ELF_MACH="3"
-            WP_SHA256=""
-            ;;
-        *)
-            fail "Неподдерживаемая архитектура процессора: $m"
-            ;;
+        x86_64|amd64) WP_ARCH="linux-amd64"; WP_ELF_MACH="62"; WP_SHA256="" ;;
+        i386|i686) WP_ARCH="linux-386"; WP_ELF_MACH="3"; WP_SHA256="" ;;
+        *) fail "Неподдерживаемая архитектура процессора: $m" ;;
     esac
 }
 mkdir -p "$TMP" "$APP" "$APP/cache"
@@ -99,13 +66,10 @@ if ! command -v curl >/dev/null 2>&1; then
     log "Установка curl..."
     pkg_install curl || fail 'Не удалось установить curl.'
 fi
-if [ ! -f /etc/ssl/certs/ca-certificates.crt ] && [ ! -d /etc/ssl/certs ]; then
-    pkg_install ca-bundle >/dev/null 2>&1 || true
-fi
+if [ ! -f /etc/ssl/certs/ca-certificates.crt ] && [ ! -d /etc/ssl/certs ]; then pkg_install ca-bundle >/dev/null 2>&1 || true; fi
 
 command -v uci >/dev/null 2>&1 || fail 'Не найден UCI.'
 command -v jsonfilter >/dev/null 2>&1 || fail 'Не найден jsonfilter.'
-[ -d /www/luci-static/resources/view ] || fail 'Не найден LuCI.'
 
 ASSET="https://github.com/bepass-org/warp-plus/releases/download/v${VERSION}/warp-plus_${WP_ARCH}.zip"
 
@@ -115,20 +79,14 @@ if [ ! -x "$APP/warp-plus" ]; then
     
     if [ -n "$WP_SHA256" ]; then
         SHA_ADDED=0
-        if ! command -v sha256sum >/dev/null 2>&1; then
-            pkg_install coreutils-sha256sum || fail 'Не удалось установить sha256sum.'
-            SHA_ADDED=1
-        fi
+        if ! command -v sha256sum >/dev/null 2>&1; then pkg_install coreutils-sha256sum || fail 'Не удалось установить sha256sum.'; SHA_ADDED=1; fi
         ACTUAL_SHA="$(sha256sum "$TMP/wp.zip" | awk '{print $1}')"
         [ "$ACTUAL_SHA" = "$WP_SHA256" ] || fail "SHA256 не совпал (ожидался $WP_SHA256, получен $ACTUAL_SHA)."
         [ "$SHA_ADDED" = 0 ] || pkg_remove coreutils-sha256sum
     fi
 
     UNZIP_ADDED=0
-    if ! command -v unzip >/dev/null 2>&1; then
-        pkg_install unzip || fail 'Не удалось установить unzip.'
-        UNZIP_ADDED=1
-    fi
+    if ! command -v unzip >/dev/null 2>&1; then pkg_install unzip || fail 'Не удалось установить unzip.'; UNZIP_ADDED=1; fi
     unzip -tq "$TMP/wp.zip" >/dev/null || fail 'Архив warp-plus повреждён.'
     mkdir -p "$TMP/u"
     unzip -oq "$TMP/wp.zip" -d "$TMP/u" || fail 'Не удалось распаковать warp-plus.'
@@ -138,11 +96,8 @@ if [ ! -x "$APP/warp-plus" ]; then
     ELF_MAGIC="$(head -c 4 "$WP_CANDIDATE" | od -An -t x1 | tr -d ' \n')"
     [ "$ELF_MAGIC" = '7f454c46' ] || fail 'Скачанный файл не является исполняемым ELF.'
     ELF_ENDIAN="$(od -An -t u1 -j 5 -N 1 "$WP_CANDIDATE" | tr -d ' ')"
-    if [ "$ELF_ENDIAN" = "1" ]; then
-        ELF_MACH="$(od -An -t u1 -j 18 -N 2 "$WP_CANDIDATE" | awk '{print $1 + $2*256}')"
-    else
-        ELF_MACH="$(od -An -t u1 -j 18 -N 2 "$WP_CANDIDATE" | awk '{print $1*256 + $2}')"
-    fi
+    if [ "$ELF_ENDIAN" = "1" ]; then ELF_MACH="$(od -An -t u1 -j 18 -N 2 "$WP_CANDIDATE" | awk '{print $1 + $2*256}')"
+    else ELF_MACH="$(od -An -t u1 -j 18 -N 2 "$WP_CANDIDATE" | awk '{print $1*256 + $2}')"; fi
     [ "$ELF_MACH" = "$WP_ELF_MACH" ] || fail "Архитектура бинарника ($ELF_MACH) не совпадает с роутером ($WP_ELF_MACH)."
 
     cp "$WP_CANDIDATE" "$TMP/warp-plus.new" && chmod 755 "$TMP/warp-plus.new"
@@ -173,9 +128,6 @@ else
     case "$cur_wh" in 0|1|6|12|24|boot) ;; *) uci -q set owrt-psiphon.main.watchdog_hours='0' ;; esac
     [ -n "$(uci -q get owrt-psiphon.main.enabled || true)" ] || uci -q set owrt-psiphon.main.enabled='0'
     [ -n "$(uci -q get owrt-psiphon.main.country || true)" ] || uci -q set owrt-psiphon.main.country='NL'
-    [ -n "$(uci -q get owrt-psiphon.main.bind || true)" ] || uci -q set owrt-psiphon.main.bind='192.168.1.1'
-    [ -n "$(uci -q get owrt-psiphon.main.port || true)" ] || uci -q set owrt-psiphon.main.port='8086'
-    [ -n "$(uci -q get owrt-psiphon.main.endpoint || true)" ] || uci -q set owrt-psiphon.main.endpoint='188.114.99.150:1701'
     uci -q commit owrt-psiphon
 fi
 
@@ -243,6 +195,7 @@ service_triggers() {
 	procd_add_reload_trigger owrt-psiphon
 }
 EOF
+
 cat << 'EOF' > /usr/libexec/owrt-psiphon/owrt-psiphonctl
 #!/bin/sh
 APP=/opt/owrt-psiphon
@@ -267,22 +220,14 @@ ALL_COUNTRIES="NL DE FI SE PL AT CH FR GB NO BE CZ DK EE LV ES IT PT IE BG RO HR
 SCAN_LIST="NL DE FI SE PL AT CH FR GB NO"
 
 pkg_install() {
-	if command -v apk >/dev/null 2>&1; then
-		apk add --no-cache "$1"
-	elif command -v opkg >/dev/null 2>&1; then
-		opkg update >/dev/null 2>&1 || true
-		opkg install "$1"
-	else
-		return 1
-	fi
+	if command -v apk >/dev/null 2>&1; then apk add --no-cache "$1"
+	elif command -v opkg >/dev/null 2>&1; then opkg update >/dev/null 2>&1 || true; opkg install "$1"
+	else return 1; fi
 }
 
 pkg_remove() {
-	if command -v apk >/dev/null 2>&1; then
-		apk del "$1" >/dev/null 2>&1 || true
-	elif command -v opkg >/dev/null 2>&1; then
-		opkg remove "$1" >/dev/null 2>&1 || true
-	fi
+	if command -v apk >/dev/null 2>&1; then apk del "$1" >/dev/null 2>&1 || true
+	elif command -v opkg >/dev/null 2>&1; then opkg remove "$1" >/dev/null 2>&1 || true; fi
 }
 
 get_wp_arch() {
@@ -346,25 +291,15 @@ port_listening() {
 acquire_lock() {
 	lock_dir="$1"
 	mkdir -p /var/run
-	if mkdir "$lock_dir" 2>/dev/null; then
-		printf '%s\n' "$$" > "${lock_dir}/pid"
-		return 0
-	fi
+	if mkdir "$lock_dir" 2>/dev/null; then printf '%s\n' "$$" > "${lock_dir}/pid"; return 0; fi
 	old_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
-	if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-		return 1
-	fi
+	if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then return 1; fi
 	rm -rf "$lock_dir"
-	if mkdir "$lock_dir" 2>/dev/null; then
-		printf '%s\n' "$$" > "${lock_dir}/pid"
-		return 0
-	fi
+	if mkdir "$lock_dir" 2>/dev/null; then printf '%s\n' "$$" > "${lock_dir}/pid"; return 0; fi
 	return 1
 }
 
-release_lock() {
-	rm -rf "$1" 2>/dev/null || true
-}
+release_lock() { rm -rf "$1" 2>/dev/null || true; }
 
 ver_gt() {
 	v1="$(printf '%s' "$1" | sed 's/^v//')"
@@ -394,11 +329,7 @@ probe_socks_endpoint() {
 	fi
 	[ -n "$cc" ] || return 1
 	secs="$(curl -4 -fsS -o /dev/null --max-time "$t_out" --socks5-hostname "$sock_addr" -w '%{time_starttransfer}' http://cp.cloudflare.com/generate_204 2>/dev/null || true)"
-	if [ -n "$secs" ]; then
-		ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"
-	else
-		ms="999"
-	fi
+	if [ -n "$secs" ]; then ms="$(awk -v s="$secs" 'BEGIN { printf "%d", s*1000 }')"; else ms="999"; fi
 	printf '%s|%s|%s\n' "$cc" "$ip" "$ms"
 }
 
@@ -415,8 +346,7 @@ probe_internal() {
 }
 
 wait_socks_ready() {
-	max_wait="${1:-35}"
-	elapsed=0
+	max_wait="${1:-35}"; elapsed=0
 	while [ "$elapsed" -lt "$max_wait" ]; do
 		managed_pid >/dev/null || return 1
 		probe_internal && return 0
@@ -452,7 +382,7 @@ status() {
 	else
 		rm -f "$PROBE_FILE"
 	fi
-	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.8)"
+	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.9)"
 	version="v1.2.6"
 	if [ -x "$BIN" ]; then
 		v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
@@ -472,7 +402,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.8)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.4.9)"
 	remote_head="$(curl -fsSL --max-time 8 "${REPO_URL}?t=$(date +%s)" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -870,10 +800,12 @@ case "$1" in
         ;;
 esac
 EOF
-printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
-printf '{"luci-app-owrt-psiphon":{"description":"OWRTPsiphon LuCI access","read":{"ubus":{"owrt-psiphon":["status","scan_status","check_update","check_warp_update"]}},"write":{"ubus":{"owrt-psiphon":["start","stop","set_country","set_auto","probe","scan","apply_update","apply_warp_update","uninstall"]}}}}\n' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
 
-cat << 'EOF' > /www/luci-static/resources/view/owrt-psiphon/main.js
+if [ "$NO_LUCI" -eq 0 ]; then
+    printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
+    printf '{"luci-app-owrt-psiphon":{"description":"OWRTPsiphon LuCI access","read":{"ubus":{"owrt-psiphon":["status","scan_status","check_update","check_warp_update"]}},"write":{"ubus":{"owrt-psiphon":["start","stop","set_country","set_auto","probe","scan","apply_update","apply_warp_update","uninstall"]}}}}\n' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
+
+    cat << 'EOF' > /www/luci-static/resources/view/owrt-psiphon/main.js
 'use strict';
 'require view';
 'require rpc';
@@ -901,7 +833,7 @@ return view.extend({
 		var root = E('div', { 'class': 'cbi-map' }),
 		    stateTable = E('div', { 'class': 'table' }),
 		    scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic' }),
-		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.4.8'),
+		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.4.9'),
 		    appUpdStatus = E('span', { 'style': 'margin-left:8px' }),
 		    warpVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v1.2.6'),
 		    warpUpdStatus = E('span', { 'style': 'margin-left:8px' });
@@ -1006,7 +938,7 @@ return view.extend({
 				if (whVal === '0' && status.auto_scan_boot == 1) whVal = 'boot';
 				selWatchdog.value = whVal;
 
-				appVerLabel.textContent = 'v' + (status.app_version || '0.4.8');
+				appVerLabel.textContent = 'v' + (status.app_version || '0.4.9');
 				warpVerLabel.textContent = status.version || 'v1.2.6';
 
 				var wp = status.running
@@ -1039,32 +971,31 @@ return view.extend({
 						E('button', { 'class': 'btn cbi-button-action', 'style': 'margin:0', 'click': function() { copyText(sub); } }, 'Копировать')
 					])]
 				].forEach(function(r) {
-					stateTable.appendChild(E('
-div', { 'class': 'tr' }, [
-E('div', { 'class': 'td left', 'style': 'font-weight:bold;width:30%' }, r[0]),
-E('div', { 'class': 'td left' }, r[1])
-]));
-});
-scanBox.textContent = scan.running ? ('Проверка узлов: ' + (scan.current || '…')) : '';
-scanBox.style.display = scan.running ? 'block' : 'none';
-});
-}
-function pollScan() {
-if (pollActive || !scan.running) return;
-pollActive = true;
-function tick() {
-updateStatus().then(function() {
-if (scan.running) {
-window.setTimeout(tick, 4000);
-} else {
-pollActive = false;
-}
-}).catch(function() {
-pollActive = false;
-});
-}
-window.setTimeout(tick, 2500);
-}
+					stateTable.appendChild(E('div', { 'class': 'tr' }, [
+						E('div', { 'class': 'td left', 'style': 'font-weight:bold;width:30%' }, r[0]),
+						E('div', { 'class': 'td left' }, r[1])
+					]));
+				});
+				scanBox.textContent = scan.running ? ('Проверка узлов: ' + (scan.current || '…')) : '';
+				scanBox.style.display = scan.running ? 'block' : 'none';
+			});
+		}
+		function pollScan() {
+			if (pollActive || !scan.running) return;
+			pollActive = true;
+			function tick() {
+				updateStatus().then(function() {
+					if (scan.running) {
+						window.setTimeout(tick, 4000);
+					} else {
+						pollActive = false;
+					}
+				}).catch(function() {
+					pollActive = false;
+				});
+			}
+			window.setTimeout(tick, 2500);
+		}
 
 		function action(p, okMsg) {
 			if (guardBusy()) return;
@@ -1283,20 +1214,25 @@ window.setTimeout(tick, 2500);
 	handleReset: null
 });
 EOF
+    chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json /www/luci-static/resources/view/owrt-psiphon/main.js
+fi
 
 printf '%s\n' "$APP_VER" > "$APP/app.version"
 chmod 755 /etc/init.d/owrt-psiphon /usr/libexec/rpcd/owrt-psiphon /usr/libexec/owrt-psiphon/owrt-psiphonctl
-chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json /www/luci-static/resources/view/owrt-psiphon/main.js
 
 /usr/libexec/owrt-psiphon/owrt-psiphonctl set_auto \
     "$(uci -q get owrt-psiphon.main.autostart || echo 1)" \
     "$(uci -q get owrt-psiphon.main.auto_scan_boot || echo 0)" \
     "$(uci -q get owrt-psiphon.main.watchdog_hours || echo 0)" >/dev/null 2>&1 || true
 
-touch /www/luci-static/resources/view/owrt-psiphon/main.js
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+if [ "$NO_LUCI" -eq 0 ]; then
+    touch /www/luci-static/resources/view/owrt-psiphon/main.js
+    rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+fi
 rm -rf "$TMP"
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
-/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+if [ "$NO_LUCI" -eq 0 ]; then
+    /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+fi
 
 log "Установка OWRTPsiphon v${APP_VER} (${WP_ARCH}) завершена. Служба не запускалась."
