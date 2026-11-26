@@ -29,10 +29,6 @@ Psiphon — это **инструмент обхода цензуры**, а не
 
     curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
 
-Для интеграции без интерфейса LuCI (например, для Zapret-Manager):
-
-    curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh --no-luci
-
 После установки откройте **Службы → OWRTPsiphon** в LuCI. Вставьте `socks5://192.168.1.1:8086#OWRTPsiphon` в **Steer → VPN → Свои серверы**.
 
 ---
