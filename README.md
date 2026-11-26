@@ -29,10 +29,6 @@ Using `curl`:
 
     curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh
 
-For integration without the LuCI interface (e.g., for Zapret-Manager):
-
-    curl -fsSL "https://raw.githubusercontent.com/Tan4ig/owrt-psiphon/main/install.sh" -o /tmp/owrt-install.sh && sh /tmp/owrt-install.sh --no-luci
-
 After installation, open **Services → OWRTPsiphon** in LuCI. Paste `socks5://192.168.1.1:8086#OWRTPsiphon` into **Steer → VPN → Custom Servers**.
 
 ---
