@@ -23,7 +23,7 @@ Psiphon is a **censorship circumvention tool**, not a traditional VPN. It uses a
 
 ## Installation
 
-Run one of the following commands via SSH on your OpenWrt router:
+Run command via SSH on your OpenWrt router:
 
 Using `curl`:
 
