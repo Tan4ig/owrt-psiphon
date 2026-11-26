@@ -1,12 +1,12 @@
 #!/bin/sh
-# VERSION=0.5.2
-# OWRTPsiphon 0.5.2 — universal LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.5.3
+# OWRTPsiphon 0.5.3 — universal LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: Tan4ig/owrt-psiphon
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: bepass-org/warp-plus (MIT License).
 set -eu
 
-APP_VER="0.5.2"
+APP_VER="0.5.3"
 UI_MODULE="main-v$(printf '%s' "$APP_VER" | tr . _)"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
@@ -124,8 +124,8 @@ config owrt-psiphon 'main'
 	option autostart '1'
 	option auto_scan_boot '0'
 	option watchdog_hours '0'
-	option country 'NL'
-	option last_good_country 'NL'
+	option country 'FI'
+	option last_good_country 'FI'
 	option bind '192.168.1.1'
 	option port '8086'
 	option endpoint '188.114.99.150:1701'
@@ -133,13 +133,13 @@ config owrt-psiphon 'main'
 EOF
 else
     [ "$(uci -q get owrt-psiphon.main.test_url || true)" = "https://ipinfo.io" ] && uci -q set owrt-psiphon.main.test_url='http://example.com'
-    [ -n "$(uci -q get owrt-psiphon.main.last_good_country || true)" ] || uci -q set owrt-psiphon.main.last_good_country="$(uci -q get owrt-psiphon.main.country || echo NL)"
+    [ -n "$(uci -q get owrt-psiphon.main.last_good_country || true)" ] || uci -q set owrt-psiphon.main.last_good_country="$(uci -q get owrt-psiphon.main.country || echo FI)"
     [ -n "$(uci -q get owrt-psiphon.main.autostart || true)" ] || uci -q set owrt-psiphon.main.autostart='1'
     [ -n "$(uci -q get owrt-psiphon.main.auto_scan_boot || true)" ] || uci -q set owrt-psiphon.main.auto_scan_boot='0'
     cur_wh="$(uci -q get owrt-psiphon.main.watchdog_hours || echo 0)"
     case "$cur_wh" in 0|1|6|12|24|boot) ;; *) uci -q set owrt-psiphon.main.watchdog_hours='0' ;; esac
     [ -n "$(uci -q get owrt-psiphon.main.enabled || true)" ] || uci -q set owrt-psiphon.main.enabled='0'
-    [ -n "$(uci -q get owrt-psiphon.main.country || true)" ] || uci -q set owrt-psiphon.main.country='NL'
+    [ -n "$(uci -q get owrt-psiphon.main.country || true)" ] || uci -q set owrt-psiphon.main.country='FI'
     uci -q commit owrt-psiphon
 fi
 
@@ -164,7 +164,7 @@ start_service() {
 	local enabled country bind port endpoint test_url
 	config_get_bool enabled main enabled 0
 	[ "$enabled" -eq 1 ] || return 0
-	config_get country main country NL
+	config_get country main country FI
 	config_get bind main bind 192.168.1.1
 	config_get port main port 8086
 	config_get endpoint main endpoint "188.114.99.150:1701"
@@ -197,8 +197,8 @@ boot() {
 	if [ "$autostart" -eq 1 ]; then
 		uci -q set owrt-psiphon.main.enabled='1' && uci -q commit owrt-psiphon
 		if [ "$auto_scan_boot" -eq 1 ] || [ "$watchdog_hours" = "boot" ]; then
-			# При автоподборе на старте не тратим ресурсы на двойной запуск: сразу запускаем лёгкий сканер.
-			(sleep 12 && /usr/libexec/owrt-psiphon/owrt-psiphonctl _scan_boot) </dev/null >/dev/null 2>&1 &
+			# При загрузке: не спеша в фоне ищем первый приемлемый узел, садимся на него и останавливаем скан.
+			(sleep 15 && /usr/libexec/owrt-psiphon/owrt-psiphonctl _scan_boot) </dev/null >/dev/null 2>&1 &
 		else
 			start
 		fi
@@ -222,7 +222,7 @@ WARP_API_URL="https://api.github.com/repos/bepass-org/warp-plus/releases/latest"
 
 BIND="$(uci -q get ${CONFIG}.bind || echo 192.168.1.1)"
 PORT="$(uci -q get ${CONFIG}.port || echo 8086)"
-COUNTRY="$(uci -q get ${CONFIG}.country || echo NL)"
+COUNTRY="$(uci -q get ${CONFIG}.country || echo FI)"
 ENDPOINT="$(uci -q get ${CONFIG}.endpoint || echo 188.114.99.150:1701)"
 TEST_URL="$(uci -q get ${CONFIG}.test_url || echo http://example.com)"
 
@@ -232,7 +232,8 @@ PROBE_FILE=/var/run/owrt-psiphon-probe.state
 SCAN_LOCK=/var/run/owrt-psiphon-scan.lock
 WATCHDOG_LOCK=/var/run/owrt-psiphon-watchdog.lock
 
-ALL_COUNTRIES="NL DE FI SE PL AT CH FR GB NO BE CZ DK EE LV ES IT PT IE BG RO HR HU RS SK SG JP IN AU CA US"
+# Порядок по примерным типовым пингам от РФ: сначала ближайшие узлы (Скандинавия/Балтия/Центральная Европа), затем остальной мир.
+ALL_COUNTRIES="FI EE LV SE PL DE NL DK NO CZ AT CH SK HU RO BG FR BE GB IE ES IT PT HR RS CA US IN SG JP AU"
 SCAN_LIST="$ALL_COUNTRIES"
 
 pkg_install() {
@@ -356,25 +357,38 @@ ver_gt() {
 	}'
 }
 
-# Проверяет страну, IP и реальный TTFB-пинг через SOCKS5 с резервным GeoIP-источником.
+# Проверяет страну, IP и реальный TTFB-пинг через SOCKS5 с резервными GeoIP-источниками.
 probe_socks_endpoint() {
 	sock_addr="$1"
-	t_out="${2:-5}"
+	t_out="${2:-6}"
 	cc=""; ip=""; secs=""
 
-	out="$(curl -4 -fsS --connect-timeout 2 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-		-w '\n__OWRT_T__%{time_starttransfer}' https://api.ip.sb/geoip 2>/dev/null || true)"
+	out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
+		-w '\n__OWRT_T__%{time_starttransfer}' https://1.1.1.1/cdn-cgi/trace 2>/dev/null || true)"
 	case "$out" in
 		*__OWRT_T__*)
 			secs="${out##*__OWRT_T__}"
 			body="${out%__OWRT_T__*}"
-			cc="$(jsonfilter -s "$body" -e '@.country_code' 2>/dev/null || true)"
-			ip="$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null || true)"
+			cc="$(printf '%s\n' "$body" | sed -n 's/^loc=\([A-Z][A-Z]\).*/\1/p' | head -n 1)"
+			ip="$(printf '%s\n' "$body" | sed -n 's/^ip=\(.*\)/\1/p' | head -n 1)"
 			;;
 	esac
 
 	if [ -z "$cc" ]; then
-		out="$(curl -4 -fsS --connect-timeout 2 --max-time "$t_out" --socks5-hostname "$sock_addr" \
+		out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
+			-w '\n__OWRT_T__%{time_starttransfer}' https://api.ip.sb/geoip 2>/dev/null || true)"
+		case "$out" in
+			*__OWRT_T__*)
+				secs="${out##*__OWRT_T__}"
+				body="${out%__OWRT_T__*}"
+				cc="$(jsonfilter -s "$body" -e '@.country_code' 2>/dev/null || true)"
+				ip="$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null || true)"
+				;;
+		esac
+	fi
+
+	if [ -z "$cc" ]; then
+		out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
 			-w '\n__OWRT_T__%{time_starttransfer}' https://ipinfo.io/json 2>/dev/null || true)"
 		case "$out" in
 			*__OWRT_T__*)
@@ -386,63 +400,20 @@ probe_socks_endpoint() {
 		esac
 	fi
 
-	if [ -z "$cc" ]; then
-		# Резервный легковесный endpoint Cloudflare trace (plain text: ip=..., loc=XX).
-		out="$(curl -4 -fsS --connect-timeout 2 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-			-w '\n__OWRT_T__%{time_starttransfer}' https://1.1.1.1/cdn-cgi/trace 2>/dev/null || true)"
-		case "$out" in
-			*__OWRT_T__*)
-				secs="${out##*__OWRT_T__}"
-				body="${out%__OWRT_T__*}"
-				cc="$(printf '%s\n' "$body" | sed -n 's/^loc=\([A-Z][A-Z]\).*/\1/p' | head -n 1)"
-				ip="$(printf '%s\n' "$body" | sed -n 's/^ip=\(.*\)/\1/p' | head -n 1)"
-				;;
-		esac
-	fi
-
 	[ -n "$cc" ] || return 1
 	ms="$(awk -v s="$secs" 'BEGIN { if (s ~ /^[0-9.]+$/ && s > 0) printf "%d", s*1000; else print 999 }')"
 	printf '%s|%s|%s\n' "$cc" "$ip" "$ms"
 }
 
-# Быстрый скан: один HTTPS-запрос с коротким таймаутом и fallback на Cloudflare trace (без лишнего TLS-хендшейка).
 probe_scan_endpoint() {
 	sock_addr="$1"
-	t_out="${2:-3}"
-	cc=""; ip=""; secs=""
-
-	out="$(curl -4 -fsS --connect-timeout 2 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-		-w '\n__OWRT_SCAN_TIME__%{time_starttransfer}' https://1.1.1.1/cdn-cgi/trace 2>/dev/null || true)"
-	case "$out" in
-		*__OWRT_SCAN_TIME__*)
-			secs="${out##*__OWRT_SCAN_TIME__}"
-			body="${out%__OWRT_SCAN_TIME__*}"
-			cc="$(printf '%s\n' "$body" | sed -n 's/^loc=\([A-Z][A-Z]\).*/\1/p' | head -n 1)"
-			ip="$(printf '%s\n' "$body" | sed -n 's/^ip=\(.*\)/\1/p' | head -n 1)"
-			;;
-	esac
-
-	if [ -z "$cc" ]; then
-		out="$(curl -4 -fsS --connect-timeout 2 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-			-w '\n__OWRT_SCAN_TIME__%{time_starttransfer}' https://api.ip.sb/geoip 2>/dev/null || true)"
-		case "$out" in
-			*__OWRT_SCAN_TIME__*)
-				secs="${out##*__OWRT_SCAN_TIME__}"
-				body="${out%__OWRT_SCAN_TIME__*}"
-				cc="$(jsonfilter -s "$body" -e '@.country_code' 2>/dev/null || true)"
-				ip="$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null || true)"
-				;;
-		esac
-	fi
-
-	[ -n "$cc" ] || return 1
-	ms="$(awk -v s="$secs" 'BEGIN { if (s ~ /^[0-9.]+$/ && s > 0) printf "%d", s*1000; else print 999999 }')"
-	printf '%s|%s|%s\n' "$cc" "$ip" "$ms"
+	t_out="${2:-6}"
+	probe_socks_endpoint "$sock_addr" "$t_out"
 }
 
 probe_internal() {
 	port_listening || { rm -f "$PROBE_FILE"; return 1; }
-	res="$(probe_socks_endpoint "${BIND}:${PORT}" 6)" || { rm -f "$PROBE_FILE"; return 1; }
+	res="$(probe_socks_endpoint "${BIND}:${PORT}" 7)" || { rm -f "$PROBE_FILE"; return 1; }
 	cc="$(printf '%s' "$res" | cut -d'|' -f1)"
 	ip="$(printf '%s' "$res" | cut -d'|' -f2)"
 	ms="$(printf '%s' "$res" | cut -d'|' -f3)"
@@ -453,7 +424,7 @@ probe_internal() {
 }
 
 wait_socks_ready() {
-	max_wait="${1:-24}"; elapsed=0
+	max_wait="${1:-26}"; elapsed=0
 	while [ "$elapsed" -lt "$max_wait" ]; do
 		managed_pid >/dev/null || return 1
 		if port_listening && probe_internal; then return 0; fi
@@ -489,7 +460,7 @@ status() {
 	else
 		rm -f "$PROBE_FILE"
 	fi
-	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.2)"
+	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.3)"
 	version="v1.2.6"
 	if [ -x "$BIN" ]; then
 		v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
@@ -506,7 +477,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.2)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.3)"
 	remote_head="$(curl -fsSL --max-time 8 "${REPO_URL}?t=$(date +%s)" 2>/dev/null | head -n 5 || true)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
@@ -611,11 +582,11 @@ start_service() {
 	rm -f "$PROBE_FILE"
 	uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 	/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-	if wait_socks_ready 24; then
+	if wait_socks_ready 26; then
 		uci -q set ${CONFIG}.last_good_country="$COUNTRY" && uci -q commit owrt-psiphon
 		reply true "Служба запущена ($COUNTRY)"
 	else
-		reply false 'SOCKS5 не поднялся за 24 с'
+		reply false 'SOCKS5 не поднялся за 26 с'
 		return 1
 	fi
 }
@@ -630,11 +601,11 @@ stop_service() {
 
 safe_restart() {
 	new_country="$1"
-	old_country="$(uci -q get ${CONFIG}.last_good_country || uci -q get ${CONFIG}.country || echo NL)"
+	old_country="$(uci -q get ${CONFIG}.last_good_country || uci -q get ${CONFIG}.country || echo FI)"
 	rm -f "$PROBE_FILE"
 	uci -q set ${CONFIG}.country="$new_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 	/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-	if wait_socks_ready 22; then
+	if wait_socks_ready 24; then
 		uci -q set ${CONFIG}.last_good_country="$new_country" && uci -q commit owrt-psiphon
 		reply true "Переключено на $new_country"
 		return 0
@@ -642,7 +613,7 @@ safe_restart() {
 		if [ -n "$old_country" ] && [ "$old_country" != "$new_country" ]; then
 			uci -q set ${CONFIG}.country="$old_country" && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-			if wait_socks_ready 20; then
+			if wait_socks_ready 22; then
 				reply false "Узел $new_country не ответил; выполнен откат на $old_country"
 			else
 				reply false "Узел $new_country не ответил; откат на $old_country также не поднялся"
@@ -671,7 +642,7 @@ set_auto() {
 	case "$as" in 0|1) ;; *) reply false 'Некорректный автостарт'; return 1 ;; esac
 	case "$sb" in 0|1) ;; *) reply false 'Некорректный автоподбор при загрузке'; return 1 ;; esac
 	case "$wh" in 0|1|6|12|24|boot) ;; *) reply false 'Некорректный интервал проверки'; return 1 ;; esac
-	if [ "$wh" = "boot" ]; then sb="1"; fi
+	if [ "$wh" = "boot" ]; then sb="1"; else sb="0"; fi
 	uci -q set ${CONFIG}.autostart="$as" &&
 	uci -q set ${CONFIG}.auto_scan_boot="$sb" &&
 	uci -q set ${CONFIG}.watchdog_hours="$wh" &&
@@ -707,7 +678,7 @@ scan_start() {
 		reply false 'Автоподбор уже выполняется'
 		return 1
 	fi
-	write_scan_atomic '{"running":true,"current":"","best":"","best_ms":null,"completed":0,"total":31,"message":"Подготовка к проверке","results":[]}'
+	write_scan_atomic '{"running":true,"mode":"full","current":"","best":"","best_ms":null,"completed":0,"total":31,"message":"Подготовка к проверке","results":[]}'
 	if command -v setsid >/dev/null 2>&1; then
 		setsid "$0" _scan </dev/null >/dev/null 2>&1 &
 	else
@@ -747,6 +718,8 @@ stop_probe_proc() {
 	wait "$p" 2>/dev/null || true
 }
 
+# boot_mode=1: фоновый старт при загрузке — не торопясь пингуем в порядке близости к РФ, садимся на первый приемлемый узел и останавливаем скан.
+# boot_mode=0: ручной автоподбор — полноценно сканируем все страны, сортируем по пингу и выбираем лучший.
 scan_worker() {
 	boot_mode="${1:-0}"
 	acquire_lock "$SCAN_LOCK" || return 0
@@ -774,7 +747,7 @@ scan_worker() {
 		if [ "$restore_required" = 1 ] && [ "$was_running" = 1 ] && ! managed_pid >/dev/null 2>&1; then
 			uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-			wait_socks_ready 22 >/dev/null 2>&1 || true
+			wait_socks_ready 24 >/dev/null 2>&1 || true
 		fi
 		release_lock "$SCAN_LOCK"
 	}
@@ -795,7 +768,7 @@ scan_worker() {
 	if [ -n "$main_pid" ]; then
 		/etc/init.d/owrt-psiphon stop >/dev/null 2>&1 || true
 		n=0
-		while [ "$n" -lt 6 ] && kill -0 "$main_pid" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+		while [ "$n" -lt 8 ] && kill -0 "$main_pid" 2>/dev/null; do sleep 1; n=$((n + 1)); done
 		if kill -0 "$main_pid" 2>/dev/null; then
 			restore_required=0
 			write_scan_atomic '{"running":false,"current":"","best":"","best_ms":null,"completed":0,"total":31,"message":"Не удалось остановить основной Warp Plus. Сканирование отменено.","results":[]}'
@@ -803,29 +776,34 @@ scan_worker() {
 		fi
 	fi
 
-	# Храним временный кэш сканера в RAM (/tmp), чтобы не изнашивать flash-память роутера.
+	# Инициализируем рабочий кэш в RAM из постоянного кэша (если есть), чтобы warp-plus не качал метаданные с нуля.
 	mkdir -p "$scan_cache"
-	# Сначала проверяем текущую/последнюю рабочую страну, чтобы быстрее найти рабочий узел.
-	ordered_scan="$old_country"
-	for c in $SCAN_LIST; do
-		[ "$c" = "$old_country" ] && continue
-		ordered_scan="$ordered_scan $c"
-	done
+	if [ -d "$APP/cache" ]; then
+		cp -r "$APP/cache"/* "$scan_cache"/ 2>/dev/null || true
+	fi
+
+	# При загрузке идём строго по списку близости к РФ (начиная с FI, EE, LV, SE, PL, DE, NL...),
+	# чтобы первым делом проверить самые быстрые общепринятые узлы.
+	ordered_scan="$SCAN_LIST"
 
 	: > "$tmp_lines"
 	best_country=""
 	best_ms=999999
 	completed=0
 	total=31
+	mode_name="full"
+	[ "$boot_mode" = "1" ] && mode_name="boot"
 
 	for c in $ordered_scan; do
 		cur_best_ms="$( [ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms" )"
-		write_scan_atomic "{\"running\":true,\"current\":\"$c\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"Проверка узлов. Основной туннель временно остановлен.\",\"results\":$(build_sorted_json "$tmp_lines")}"
+		if [ "$boot_mode" = "1" ]; then
+			status_msg="Фоновый поиск первого рабочего узла при загрузке…"
+		else
+			status_msg="Проверка узлов. Основной туннель временно остановлен."
+		fi
+		write_scan_atomic "{\"running\":true,\"mode\":\"$mode_name\",\"current\":\"$c\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"$(json_escape "$status_msg")\",\"results\":$(build_sorted_json "$tmp_lines")}"
 
-		# Удаляем только файлы сессии/эндпоинтов между странами, сохраняя общий прогресс кэша.
-		rm -f "$scan_cache"/*.json "$scan_cache"/*.db "$scan_cache"/psiphon* 2>/dev/null || true
-
-		if command -v nice >/dev/null 2>&1; then
+		if [ "$boot_mode" = "1" ] && command -v nice >/dev/null 2>&1; then
 			if [ -n "$ENDPOINT" ]; then
 				nice -n 10 "$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$scan_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
 			else
@@ -842,8 +820,10 @@ scan_worker() {
 		printf '%s\n' "$probe_pid" > "$SCAN_PIDFILE"
 
 		res=""; got=""; ip=""; ms="999999"; state="timeout"; rank=2; ticks=0; ready=0
-		# Шаг 0.25 с (до 4 с) позволяет поймать готовность порта сразу, без лишних секунд простоя.
-		while [ "$ticks" -lt 16 ]; do
+		# Ждём открытия локального SOCKS5 порта (при загрузке до 14 с не торопясь, при ручном скане до 10 с).
+		max_ticks=40
+		[ "$boot_mode" = "1" ] && max_ticks=56
+		while [ "$ticks" -lt "$max_ticks" ]; do
 			if ! kill -0 "$probe_pid" 2>/dev/null; then break; fi
 			if port_in_use "$scan_port"; then ready=1; break; fi
 			usleep 250000 2>/dev/null || { sleep 1; ticks=$((ticks + 3)); }
@@ -851,7 +831,18 @@ scan_worker() {
 		done
 
 		if [ "$ready" = 1 ]; then
-			res="$(probe_scan_endpoint "127.0.0.1:${scan_port}" 3 || true)"
+			# Даём туннелю до 2.5 с на завершение рукопожатия Psiphon после открытия локального сокета.
+			probe_t=6
+			[ "$boot_mode" = "1" ] && probe_t=8
+			attempt=0
+			while [ "$attempt" -lt 2 ]; do
+				res="$(probe_scan_endpoint "127.0.0.1:${scan_port}" "$probe_t" || true)"
+				[ -n "$res" ] && break
+				kill -0 "$probe_pid" 2>/dev/null || break
+				sleep 1
+				attempt=$((attempt + 1))
+			done
+
 			if [ -n "$res" ]; then
 				got="$(printf '%s' "$res" | cut -d'|' -f1)"
 				ip="$(printf '%s' "$res" | cut -d'|' -f2)"
@@ -879,7 +870,18 @@ scan_worker() {
 		printf '%s|%s|%s|%s|%s|%s\n' "$rank" "$sort_ms" "$c" "$got" "$ip" "$state" >> "$tmp_lines"
 		completed=$((completed + 1))
 		cur_best_ms="$( [ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms" )"
-		write_scan_atomic "{\"running\":true,\"current\":\"\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"Проверено $completed из $total\",\"results\":$(build_sorted_json "$tmp_lines")}"
+
+		# При загрузке (boot_mode=1): как только нашли первый приемлемый рабочий сервер — сразу садимся на него и останавливаем скан!
+		if [ "$boot_mode" = "1" ] && [ "$state" = "ok" ]; then
+			best_country="$c"
+			best_ms="$ms"
+			break
+		fi
+
+		write_scan_atomic "{\"running\":true,\"mode\":\"$mode_name\",\"current\":\"\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"Проверено $completed из $total\",\"results\":$(build_sorted_json "$tmp_lines")}"
+
+		# При фоновом поиске на загрузке делаем небольшую паузу, чтобы не грузить CPU роутера.
+		[ "$boot_mode" = "1" ] && sleep 1
 	done
 
 	final_json="$(build_sorted_json "$tmp_lines")"
@@ -887,15 +889,19 @@ scan_worker() {
 		if [ "$was_running" = 1 ]; then
 			uci -q set ${CONFIG}.country="$best_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-			if wait_socks_ready 24; then
+			if wait_socks_ready 26; then
 				uci -q set ${CONFIG}.last_good_country="$best_country" && uci -q commit owrt-psiphon
 				restore_required=0
-				msg="Лучший узел: $best_country (${best_ms} мс). Туннель запущен."
+				if [ "$boot_mode" = "1" ]; then
+					msg="Автоподбор при загрузке: выбран первый рабочий узел $best_country (${best_ms} мс)."
+				else
+					msg="Лучший узел: $best_country (${best_ms} мс). Туннель запущен."
+				fi
 			else
 				uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 				/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-				if wait_socks_ready 20; then restore_required=0; msg="Лучший узел $best_country не поднялся; восстановлен прежний $old_country."
-				else msg="Лучший узел $best_country не поднялся. Не удалось проверить восстановление $old_country."; fi
+				if wait_socks_ready 22; then restore_required=0; msg="Узел $best_country не поднялся; восстановлен прежний $old_country."
+				else msg="Узел $best_country не поднялся. Не удалось проверить восстановление $old_country."; fi
 			fi
 		else
 			uci -q set ${CONFIG}.country="$best_country" && uci -q commit owrt-psiphon
@@ -905,11 +911,11 @@ scan_worker() {
 		if [ "$was_running" = 1 ]; then
 			uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-			if wait_socks_ready 20; then restore_required=0; fi
+			if wait_socks_ready 22; then restore_required=0; fi
 		fi
 		msg="Рабочих узлов не найдено. Прежняя страна $old_country сохранена."
 	fi
-	write_scan_atomic "{\"running\":false,\"current\":\"\",\"best\":\"$best_country\",\"best_ms\":$( [ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms" ),\"completed\":$completed,\"total\":$total,\"message\":\"$(json_escape "$msg")\",\"results\":$final_json}"
+	write_scan_atomic "{\"running\":false,\"mode\":\"$mode_name\",\"current\":\"\",\"best\":\"$best_country\",\"best_ms\":$( [ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms" ),\"completed\":$completed,\"total\":$total,\"message\":\"$(json_escape "$msg")\",\"results\":$final_json}"
 }
 
 watchdog() {
@@ -919,14 +925,14 @@ watchdog() {
 	trap 'release_lock "$WATCHDOG_LOCK"; exit 130' INT TERM
 	trap 'release_lock "$WATCHDOG_LOCK"' EXIT
 	probe_internal && return 0
-	cur="$(uci -q get ${CONFIG}.country || echo NL)"
+	cur="$(uci -q get ${CONFIG}.country || echo FI)"
 	if [ -s "$SCANFILE" ]; then
 		for next_c in $(sed 's/},{/}\n{/g' "$SCANFILE" | grep '"state":"ok"' | sed -n 's/.*"country":"\([A-Z][A-Z]\)".*/\1/p'); do
 			[ "$next_c" = "$cur" ] && continue
 			safe_restart "$next_c" >/dev/null 2>&1 && return 0
 		done
 	fi
-	scan_worker 0 || true
+	scan_worker 1 || true
 }
 
 uninstall_all() {
@@ -982,7 +988,7 @@ cat << 'EOF' > /usr/libexec/rpcd/owrt-psiphon
 CTL="/usr/libexec/owrt-psiphon/owrt-psiphonctl"
 case "$1" in
     list)
-        printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"NL"},"set_auto":{"autostart":"1","auto_scan_boot":"0","watchdog_hours":"0"},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"check_warp_update":{},"apply_warp_update":{},"uninstall":{}}\n'
+        printf '{"status":{},"start":{},"stop":{},"set_country":{"country":"FI"},"set_auto":{"autostart":"1","auto_scan_boot":"0","watchdog_hours":"0"},"probe":{},"scan":{},"scan_status":{},"check_update":{},"apply_update":{},"check_warp_update":{},"apply_warp_update":{},"uninstall":{}}\n'
         ;;
     call)
         input="$(cat)"; [ -n "$input" ] || input="{}"
@@ -1035,7 +1041,8 @@ var callStatus = rpc.declare({ object: 'owrt-psiphon', method: 'status', expect:
     callApplyWarpUpdate = rpc.declare({ object: 'owrt-psiphon', method: 'apply_warp_update', expect: {} }),
     callUninstall = rpc.declare({ object: 'owrt-psiphon', method: 'uninstall', expect: {} });
 
-var CODES = ['NL','DE','FI','SE','PL','AT','CH','FR','GB','NO','BE','CZ','DK','EE','LV','ES','IT','PT','IE','BG','RO','HR','HU','RS','SK','SG','JP','IN','AU','CA','US'];
+// Порядок по удалённости и типовым пингам от РФ (сначала быстрые европейские узлы)
+var CODES = ['FI','EE','LV','SE','PL','DE','NL','DK','NO','CZ','AT','CH','SK','HU','RO','BG','FR','BE','GB','IE','ES','IT','PT','HR','RS','CA','US','IN','SG','JP','AU'];
 
 return view.extend({
 	render: function() {
@@ -1043,7 +1050,7 @@ return view.extend({
 		var root = E('div', { 'class': 'cbi-map' }),
 		    stateTable = E('div', { 'class': 'table' }),
 		    scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic' }),
-		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.5.2'),
+		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.5.3'),
 		    appUpdStatus = E('span', { 'style': 'margin-left:8px' }),
 		    warpVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v1.2.6'),
 		    warpUpdStatus = E('span', { 'style': 'margin-left:8px' });
@@ -1051,8 +1058,8 @@ return view.extend({
 		var chkAutostart = E('input', { 'type': 'checkbox' });
 
 		var selWatchdog = E('select', { 'class': 'cbi-input-select', 'style': 'min-width:175px' }, [
-			E('option', { 'value': '0' }, 'Отключена'),
-			E('option', { 'value': 'boot' }, 'При перезагрузке'),
+			E('option', { 'value': '0' }, 'Отключён'),
+			E('option', { 'value': 'boot' }, 'При загрузке'),
 			E('option', { 'value': '1' }, 'Раз в 1 час'),
 			E('option', { 'value': '6' }, 'Раз в 6 часов'),
 			E('option', { 'value': '12' }, 'Раз в 12 часов'),
@@ -1089,19 +1096,19 @@ return view.extend({
 			}
 		}
 
-		var COUNTRY_INFO = {
-			NL:['🇳🇱','Нидерланды'], DE:['🇩🇪','Германия'], FI:['🇫🇮','Финляндия'], SE:['🇸🇪','Швеция'],
-			PL:['🇵🇱','Польша'], AT:['🇦🇹','Австрия'], CH:['🇨🇭','Швейцария'], FR:['🇫🇷','Франция'],
-			GB:['🇬🇧','Великобритания'], NO:['🇳🇴','Норвегия'], BE:['🇧🇪','Бельгия'], CZ:['🇨🇿','Чехия'],
-			DK:['🇩🇰','Дания'], EE:['🇪🇪','Эстония'], LV:['🇱🇻','Латвия'], ES:['🇪🇸','Испания'],
-			IT:['🇮🇹','Италия'], PT:['🇵🇹','Португалия'], IE:['🇮🇪','Ирландия'], BG:['🇧🇬','Болгария'],
-			RO:['🇷🇴','Румыния'], HR:['🇭🇷','Хорватия'], HU:['🇭🇺','Венгрия'], RS:['🇷🇸','Сербия'],
-			SK:['🇸🇰','Словакия'], SG:['🇸🇬','Сингапур'], JP:['🇯🇵','Япония'], IN:['🇮🇳','Индия'],
-			AU:['🇦🇺','Австралия'], CA:['🇨🇦','Канада'], US:['🇺🇸','США']
+		var COUNTRY_NAMES = {
+			FI: 'Финляндия', EE: 'Эстония', LV: 'Латвия', SE: 'Швеция',
+			PL: 'Польша', DE: 'Германия', NL: 'Нидерланды', DK: 'Дания',
+			NO: 'Норвегия', CZ: 'Чехия', AT: 'Австрия', CH: 'Швейцария',
+			SK: 'Словакия', HU: 'Венгрия', RO: 'Румыния', BG: 'Болгария',
+			FR: 'Франция', BE: 'Бельгия', GB: 'Великобритания', IE: 'Ирландия',
+			ES: 'Испания', IT: 'Италия', PT: 'Португалия', HR: 'Хорватия',
+			RS: 'Сербия', CA: 'Канада', US: 'США', IN: 'Индия',
+			SG: 'Сингапур', JP: 'Япония', AU: 'Австралия'
 		};
 
-		function countryName(code) {
-			return COUNTRY_INFO[code] || ['🏳️', code];
+		function countryTitle(code) {
+			return COUNTRY_NAMES[code] || code;
 		}
 
 		function buildCountrySelect() {
@@ -1117,7 +1124,7 @@ return view.extend({
 			}
 			CODES.forEach(function(c) { if (!seen[c]) ordered.push(c); });
 
-			var cur = status.country || 'NL';
+			var cur = status.country || 'FI';
 			return E('select', {
 				'class': 'cbi-input-select owrt-psiphon-country-select',
 				'style': 'font-weight:bold;margin:0;box-sizing:border-box',
@@ -1125,12 +1132,11 @@ return view.extend({
 					var chosen = this.value;
 					if (!chosen || chosen === status.country) return;
 					if (guardBusy()) {
-						this.value = status.country || 'NL';
+						this.value = status.country || 'FI';
 						return;
 					}
 					busy = true;
-					var info = countryName(chosen);
-					notify('Переключение на ' + info[0] + ' ' + info[1] + '…', 'info');
+					notify('Переключение на ' + chosen + ' — ' + countryTitle(chosen) + '…', 'info');
 					callSetCountry(chosen).then(function(r) {
 						busy = false;
 						notify((r && r.message) || chosen, (r && r.ok) ? 'info' : 'error');
@@ -1142,18 +1148,19 @@ return view.extend({
 					});
 				}
 			}, ordered.map(function(c) {
-				var info = countryName(c), r = resultMap[c], stateText = '— не проверялась';
+				var name = countryTitle(c), r = resultMap[c], stateText = 'не проверялась';
 				if (scan.running && scan.current === c) stateText = 'Проверка…';
 				else if (r) {
 					if (r.state === 'ok' && r.latency_ms != null) stateText = r.latency_ms + ' мс';
 					else if (r.state === 'timeout') stateText = 'Таймаут';
 					else if (r.state === 'wrong_country') stateText = 'Ошибка страны' + (r.exit_country ? ': ' + r.exit_country : '');
 					else if (r.state === 'error') stateText = 'Ошибка запуска';
-					else if (r.state === 'untested') stateText = '— не проверялась';
+					else if (r.state === 'untested') stateText = 'не проверялась';
 				}
 				var activeText = (c === cur && status.running && status.socks_ok) ? ' · АКТИВНА' : (c === cur ? ' · выбрана' : '');
+				// Без дублирования кода страны и без emoji-флагов, которые в Windows рисуются как двухбуквенный код
 				return E('option', { 'value': c, 'selected': c === cur ? 'selected' : null },
-					info[0] + ' ' + c + ' — ' + info[1] + ' · ' + stateText + activeText);
+					c + ' — ' + name + ' · ' + stateText + activeText);
 			}));
 		}
 
@@ -1168,7 +1175,7 @@ return view.extend({
 				if (whVal === '0' && status.auto_scan_boot == 1) whVal = 'boot';
 				selWatchdog.value = whVal;
 
-				appVerLabel.textContent = 'v' + (status.app_version || '0.5.2');
+				appVerLabel.textContent = 'v' + (status.app_version || '0.5.3');
 				warpVerLabel.textContent = status.version || 'v1.2.6';
 
 				var wp = status.running
@@ -1207,10 +1214,10 @@ return view.extend({
 					]));
 				});
 				if (scan.running) {
-					var ci = countryName(scan.current || '');
-					scanBox.textContent = 'Проверка узлов: ' + (scan.completed || 0) + '/' + (scan.total || 31) +
-						(scan.current ? ' · ' + ci[0] + ' ' + scan.current + ' — ' + ci[1] : '') +
-						' · основной туннель временно остановлен';
+					var curCode = scan.current || '';
+					var modeLabel = (scan.mode === 'boot') ? 'Фоновый подбор при загрузке: ' : 'Проверка узлов: ';
+					scanBox.textContent = modeLabel + (scan.completed || 0) + '/' + (scan.total || 31) +
+						(curCode ? ' · ' + curCode + ' — ' + countryTitle(curCode) : '');
 				} else {
 					scanBox.textContent = scan.message || '';
 				}
@@ -1303,7 +1310,7 @@ return view.extend({
 			'.owrt-psiphon-country-wrap .btn{width:100%;margin:0!important;}}'
 		));
 		root.appendChild(E('h2', {}, 'OWRTPsiphon'));
-		root.appendChild(E('p', {}, 'Управление Psiphon (bepass-org/warp-plus --cfon) для Steer без изменения сетевой конфигурации. Автоподбор последовательно проверяет все 31 страну одним лёгким процессом.'));
+		root.appendChild(E('p', {}, 'Управление Psiphon (bepass-org/warp-plus --cfon) для Steer без изменения сетевой конфигурации.'));
 		root.appendChild(stateTable);
 		root.appendChild(scanBox);
 
@@ -1314,10 +1321,10 @@ return view.extend({
 				E('div', { 'class': 'cbi-value-field' }, chkAutostart)
 			]),
 			E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title' }, 'Проверка доступности и фейловер'),
+				E('label', { 'class': 'cbi-value-title' }, 'Автоподбор рабочего узла'),
 				E('div', { 'class': 'cbi-value-field' }, [
 					selWatchdog,
-					E('div', { 'style': 'font-size:12px;color:#666;margin-top:4px' }, 'При падении узла переключает на следующий рабочий по возрастанию пинга.')
+					E('div', { 'style': 'font-size:12px;color:#666;margin-top:4px' }, 'При загрузке выбирает первый рабочий узел; при падении переключает на следующий по пингу.')
 				])
 			])
 		]));
