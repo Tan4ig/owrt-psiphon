@@ -1,13 +1,12 @@
 #!/bin/sh
-# VERSION=0.6.5
-# OWRTPsiphon 0.6.5 — universal LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.6.6
+# OWRTPsiphon 0.6.6 — universal LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: Tan4ig/owrt-psiphon
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: bepass-org/warp-plus (MIT License).
 set -eu
 
-APP_VER="0.6.5"
-UI_MODULE="main-v$(printf '%s' "$APP_VER" | tr . _)"
+APP_VER="0.6.6"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
 VERSION="1.2.6"
@@ -701,7 +700,7 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.6.5)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.6.6)"
 	remote_raw="$(curl -fsSL --max-time 8 "${REPO_URL}?t=$(date +%s)" 2>/dev/null || true)"
 	remote_head="$(printf '%s\n' "$remote_raw" | head -n 5)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
@@ -716,15 +715,16 @@ check_update() {
 
 apply_update() {
 	scan_active && { reply false 'Дождитесь завершения подбора перед обновлением'; return 1; }
+	rm -f /tmp/owrt-psiphon-update.*.sh 2>/dev/null || true
 	tmp_upd="/tmp/owrt-psiphon-update.$$.sh"
 	curl -fsSL --max-time 15 "${REPO_URL}?t=$(date +%s)" -o "$tmp_upd" 2>/dev/null || { rm -f "$tmp_upd"; reply false 'Ошибка загрузки обновления с GitHub'; return 1; }
 	[ -s "$tmp_upd" ] && head -n 5 "$tmp_upd" | grep -q 'OWRTPsiphon' || { rm -f "$tmp_upd"; reply false 'Загруженный файл не прошел проверку'; return 1; }
 	chmod 755 "$tmp_upd"
 	reply true 'Обновление запущено. Страница перезагрузится автоматически.'
 	if command -v setsid >/dev/null 2>&1; then
-		setsid sh -c "sleep 1; sh '$tmp_upd' >/dev/null 2>&1; rm -f '$tmp_upd'" </dev/null >/dev/null 2>&1 &
+		setsid sh -c "sleep 1; sh '$tmp_upd' >/dev/null 2>&1; rm -f '$tmp_upd' /tmp/luci-indexcache /tmp/luci-modulecache" </dev/null >/dev/null 2>&1 &
 	else
-		(sleep 1; sh "$tmp_upd" >/dev/null 2>&1; rm -f "$tmp_upd") </dev/null >/dev/null 2>&1 &
+		(sleep 1; sh "$tmp_upd" >/dev/null 2>&1; rm -f "$tmp_upd" /tmp/luci-indexcache /tmp/luci-modulecache) </dev/null >/dev/null 2>&1 &
 	fi
 }
 
@@ -1580,7 +1580,7 @@ esac
 EOF
 
 if [ "$NO_LUCI" -eq 0 ]; then
-    printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/%s"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' "$UI_MODULE" > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
+    printf '{"admin/services/owrt-psiphon":{"title":"OWRTPsiphon","order":90,"action":{"type":"view","path":"owrt-psiphon/main"},"depends":{"acl":["luci-app-owrt-psiphon"]}}}\n' > /usr/share/luci/menu.d/luci-app-owrt-psiphon.json
     printf '{"luci-app-owrt-psiphon":{"description":"OWRTPsiphon LuCI access","read":{"ubus":{"owrt-psiphon":["status","scan_status","check_update","check_warp_update"]}},"write":{"ubus":{"owrt-psiphon":["start","stop","set_country","set_auto","probe","scan","scan_first","apply_update","apply_warp_update","uninstall"]}}}}\n' > /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json
 
     cat << 'EOF' > /www/luci-static/resources/view/owrt-psiphon/main.js
@@ -1613,7 +1613,7 @@ return view.extend({
 		var root = E('div', { 'class': 'cbi-map' }),
 		    stateTable = E('div', { 'class': 'table' }),
 		    liveLine = E('div', { 'class': 'owrt-live-line', 'style': 'display:none' }),
-		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.6.5'),
+		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.6.6'),
 		    appUpdStatus = E('span', { 'style': 'margin-left:8px' }),
 		    warpVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v1.2.6'),
 		    warpUpdStatus = E('span', { 'style': 'margin-left:8px' });
@@ -1999,7 +1999,7 @@ return view.extend({
 				if (whVal === '0' && status.auto_scan_boot == 1) whVal = 'boot';
 				selWatchdog.value = whVal;
 
-				appVerLabel.textContent = 'v' + (status.app_version || '0.6.5');
+				appVerLabel.textContent = 'v' + (status.app_version || '0.6.6');
 				warpVerLabel.textContent = status.version || 'v1.2.6';
 
 				var wp;
@@ -2245,8 +2245,15 @@ return view.extend({
 								notify((res && res.message) || 'Обновление…', (res && res.ok) ? 'info' : 'error');
 								if (res && res.ok) {
 									window.setTimeout(function() {
-										window.location.href = window.location.pathname + '?v=' + Date.now();
-									}, 6000);
+										try {
+											if (window.sessionStorage) {
+												Object.keys(window.sessionStorage).forEach(function(k) {
+													if (k.indexOf('luci') !== -1) window.sessionStorage.removeItem(k);
+												});
+											}
+										} catch (e) {}
+										window.location.replace('/cgi-bin/luci/admin/services/owrt-psiphon');
+									}, 8000);
 								} else {
 									busy = false;
 									setBtnState(btnInstApp, false, 'Установить v' + r.remote_version);
@@ -2395,11 +2402,8 @@ return view.extend({
 	handleReset: null
 });
 EOF
-    mv -f /www/luci-static/resources/view/owrt-psiphon/main.js \
-        "/www/luci-static/resources/view/owrt-psiphon/${UI_MODULE}.js"
-    rm -f /www/luci-static/resources/view/owrt-psiphon/main.js
     chmod 644 /usr/share/luci/menu.d/luci-app-owrt-psiphon.json /usr/share/rpcd/acl.d/luci-app-owrt-psiphon.json \
-        "/www/luci-static/resources/view/owrt-psiphon/${UI_MODULE}.js"
+        /www/luci-static/resources/view/owrt-psiphon/main.js
 fi
 
 printf '%s\n' "$APP_VER" > "$APP/app.version"
@@ -2411,7 +2415,7 @@ chmod 755 /etc/init.d/owrt-psiphon /usr/libexec/rpcd/owrt-psiphon /usr/libexec/o
     "$(uci -q get owrt-psiphon.main.watchdog_hours || echo 0)" >/dev/null 2>&1 || true
 
 if [ "$NO_LUCI" -eq 0 ]; then
-    touch "/www/luci-static/resources/view/owrt-psiphon/${UI_MODULE}.js"
+    touch /www/luci-static/resources/view/owrt-psiphon/main.js
     rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 fi
 rm -rf "$TMP"
