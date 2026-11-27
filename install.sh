@@ -1,12 +1,12 @@
 #!/bin/sh
-# VERSION=0.5.7
-# OWRTPsiphon 0.5.7 — universal LuCI controller for bepass-org/warp-plus (--cfon).
+# VERSION=0.6.1
+# OWRTPsiphon 0.6.0 — universal LuCI controller for bepass-org/warp-plus (--cfon).
 # Repository: Tan4ig/owrt-psiphon
 # Independent educational/experimental project; not affiliated with Psiphon Inc. or Cloudflare, Inc.
 # Upstream engine: bepass-org/warp-plus (MIT License).
 set -eu
 
-APP_VER="0.5.7"
+APP_VER="0.6.1"
 UI_MODULE="main-v$(printf '%s' "$APP_VER" | tr . _)"
 APP="/opt/owrt-psiphon"
 TMP="/tmp/owrt-psiphon-install.$$"
@@ -45,13 +45,13 @@ detect_arch() {
         armv6*|arm*) WP_ARCH="linux-armv6"; WP_ELF_MACH="40"; WP_SHA256="" ;;
         mips64el|mips64le) WP_ARCH="linux-mips64le"; WP_ELF_MACH="8"; WP_SHA256="" ;;
         mips64)
-            endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
+            endian="$(get_endian /bin/sh)"
             if [ "$endian" = "1" ]; then WP_ARCH="linux-mips64le"; else WP_ARCH="linux-mips64"; fi
             WP_ELF_MACH="8"; WP_SHA256=""
             ;;
         mipsel|mipsle) WP_ARCH="linux-mipsle"; WP_ELF_MACH="8"; WP_SHA256="" ;;
         mips)
-            endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
+            endian="$(get_endian /bin/sh)"
             if [ "$endian" = "1" ]; then WP_ARCH="linux-mipsle"; else WP_ARCH="linux-mips"; fi
             WP_ELF_MACH="8"; WP_SHA256=""
             ;;
@@ -61,17 +61,44 @@ detect_arch() {
     esac
 }
 
+read_bytes_u8() {
+    file_p="$1"
+    off="$2"
+    cnt="$3"
+    dd if="$file_p" bs=1 skip="$off" count="$cnt" 2>/dev/null | awk 'BEGIN {
+        for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
+    }
+    {
+        if (NR > 1) printf " 10"
+        len = length($0)
+        for (i = 1; i <= len; i++) {
+            ch = substr($0, i, 1)
+            printf " %d", (ch in ord ? ord[ch] : 0)
+        }
+    }'
+}
+
+get_endian() {
+    file_p="$1"
+    e_val="$(read_bytes_u8 "$file_p" 5 1 | awk '{print $1}')"
+    if [ "$e_val" = "1" ] || [ "$e_val" = "2" ]; then
+        printf '%s' "$e_val"
+    else
+        printf '1'
+    fi
+}
+
 verify_elf_binary() {
     bin_path="$1"
     expected_mach="$2"
     [ -s "$bin_path" ] || return 1
-    elf_magic="$(head -c 4 "$bin_path" | od -An -t x1 | tr -d ' \n')"
-    [ "$elf_magic" = '7f454c46' ] || return 1
-    elf_endian="$(od -An -t u1 -j 5 -N 1 "$bin_path" | tr -d ' ')"
+    magic="$(read_bytes_u8 "$bin_path" 0 4 | awk '{print $1" "$2" "$3" "$4}')"
+    [ "$magic" = "127 69 76 70" ] || return 1
+    elf_endian="$(get_endian "$bin_path")"
     if [ "$elf_endian" = "1" ]; then
-        elf_mach="$(od -An -t u1 -j 18 -N 2 "$bin_path" | awk '{print $1 + $2*256}')"
+        elf_mach="$(read_bytes_u8 "$bin_path" 18 2 | awk '{print ($1 + 0) + ($2 + 0)*256}')"
     else
-        elf_mach="$(od -An -t u1 -j 18 -N 2 "$bin_path" | awk '{print $1*256 + $2}')"
+        elf_mach="$(read_bytes_u8 "$bin_path" 18 2 | awk '{print ($1 + 0)*256 + ($2 + 0)}')"
     fi
     [ "$elf_mach" = "$expected_mach" ]
 }
@@ -90,10 +117,14 @@ command -v jsonfilter >/dev/null 2>&1 || fail 'Не найден jsonfilter.'
 
 ASSET="https://github.com/bepass-org/warp-plus/releases/download/v${VERSION}/warp-plus_${WP_ARCH}.zip"
 
+if [ -f "$APP/warp-plus" ] && ! verify_elf_binary "$APP/warp-plus" "$WP_ELF_MACH"; then
+    rm -f "$APP/warp-plus"
+fi
+
 if [ ! -x "$APP/warp-plus" ]; then
     log "Загрузка warp-plus v${VERSION} (${WP_ARCH})..."
     curl -fL --retry 3 --connect-timeout 20 "$ASSET" -o "$TMP/wp.zip" || fail "Ошибка загрузки warp-plus (${WP_ARCH})."
-    
+
     if [ -n "$WP_SHA256" ]; then
         SHA_ADDED=0
         if ! command -v sha256sum >/dev/null 2>&1; then pkg_install coreutils-sha256sum || fail 'Не удалось установить sha256sum.'; SHA_ADDED=1; fi
@@ -170,7 +201,7 @@ start_service() {
 	config_get endpoint main endpoint "188.114.99.150:1701"
 	config_get test_url main test_url "http://example.com"
 	mkdir -p "$CACHE_DIR"
-	rm -f /var/run/owrt-psiphon-probe.state
+	rm -f /var/run/owrt-psiphon-probe.state /var/run/owrt-psiphon-stopped.flag
 	procd_open_instance main
 	if [ -n "$endpoint" ]; then
 		procd_set_param command "$BIN" -4 -e "$endpoint" --cfon --country "$country" -b "${bind}:${port}" --cache-dir "$CACHE_DIR" --test-url "$test_url"
@@ -194,14 +225,11 @@ boot() {
 	config_get_bool autostart main autostart 1
 	config_get_bool auto_scan_boot main auto_scan_boot 0
 	config_get watchdog_hours main watchdog_hours 0
-	rm -f /var/run/owrt-psiphon-boot-scan.done /var/run/owrt-psiphon-backoff.state
+	rm -f /var/run/owrt-psiphon-boot-scan.done /var/run/owrt-psiphon-backoff.state /var/run/owrt-psiphon-stopped.flag
 	if [ "$autostart" -eq 1 ]; then
 		uci -q set owrt-psiphon.main.enabled='1' && uci -q commit owrt-psiphon
 		start
-		if [ "$auto_scan_boot" -eq 1 ] || [ "$watchdog_hours" = "boot" ]; then
-			# При загрузке сначала поднимаем текущий узел и проверяем его живость; если упал/не отвечает — в фоне ищем первый рабочий узел (однократно).
-			(sleep 18 && [ ! -f /var/run/owrt-psiphon-boot-scan.done ] && : > /var/run/owrt-psiphon-boot-scan.done && /usr/libexec/owrt-psiphon/owrt-psiphonctl watchdog) </dev/null >/dev/null 2>&1 &
-		fi
+		(sleep 18 && [ ! -f /var/run/owrt-psiphon-boot-scan.done ] && : > /var/run/owrt-psiphon-boot-scan.done && /usr/libexec/owrt-psiphon/owrt-psiphonctl _boot_check) </dev/null >/dev/null 2>&1 &
 	else
 		uci -q set owrt-psiphon.main.enabled='0' && uci -q commit owrt-psiphon
 	fi
@@ -231,8 +259,8 @@ SCAN_PIDFILE=/var/run/owrt-psiphon-scan.pid
 PROBE_FILE=/var/run/owrt-psiphon-probe.state
 SCAN_LOCK=/var/run/owrt-psiphon-scan.lock
 WATCHDOG_LOCK=/var/run/owrt-psiphon-watchdog.lock
+STOPPED_FLAG=/var/run/owrt-psiphon-stopped.flag
 
-# Порядок по примерным типовым пингам от РФ: сначала ближайшие узлы (Скандинавия/Балтия/Центральная Европа), затем остальной мир.
 ALL_COUNTRIES="FI EE LV SE PL DE NL DK NO CZ AT CH SK HU RO BG FR BE GB IE ES IT PT HR RS CA US IN SG JP AU"
 SCAN_LIST="$ALL_COUNTRIES"
 
@@ -255,13 +283,13 @@ get_wp_arch_info() {
 		armv6*|arm*) WP_ARCH="linux-armv6"; WP_ELF_MACH="40" ;;
 		mips64el|mips64le) WP_ARCH="linux-mips64le"; WP_ELF_MACH="8" ;;
 		mips64)
-			endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
+			endian="$(get_endian /bin/sh)"
 			[ "$endian" = "1" ] && WP_ARCH="linux-mips64le" || WP_ARCH="linux-mips64"
 			WP_ELF_MACH="8"
 			;;
 		mipsel|mipsle) WP_ARCH="linux-mipsle"; WP_ELF_MACH="8" ;;
 		mips)
-			endian="$(od -An -t u1 -j 5 -N 1 /bin/sh 2>/dev/null | tr -d ' ')"
+			endian="$(get_endian /bin/sh)"
 			[ "$endian" = "1" ] && WP_ARCH="linux-mipsle" || WP_ARCH="linux-mips"
 			WP_ELF_MACH="8"
 			;;
@@ -271,17 +299,44 @@ get_wp_arch_info() {
 	esac
 }
 
+read_bytes_u8() {
+	file_p="$1"
+	off="$2"
+	cnt="$3"
+	dd if="$file_p" bs=1 skip="$off" count="$cnt" 2>/dev/null | awk 'BEGIN {
+		for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
+	}
+	{
+		if (NR > 1) printf " 10"
+		len = length($0)
+		for (i = 1; i <= len; i++) {
+			ch = substr($0, i, 1)
+			printf " %d", (ch in ord ? ord[ch] : 0)
+		}
+	}'
+}
+
+get_endian() {
+	file_p="$1"
+	e_val="$(read_bytes_u8 "$file_p" 5 1 | awk '{print $1}')"
+	if [ "$e_val" = "1" ] || [ "$e_val" = "2" ]; then
+		printf '%s' "$e_val"
+	else
+		printf '1'
+	fi
+}
+
 verify_elf_binary() {
 	bin_path="$1"
 	expected_mach="$2"
 	[ -s "$bin_path" ] || return 1
-	elf_magic="$(head -c 4 "$bin_path" | od -An -t x1 | tr -d ' \n')"
-	[ "$elf_magic" = '7f454c46' ] || return 1
-	elf_endian="$(od -An -t u1 -j 5 -N 1 "$bin_path" | tr -d ' ')"
+	magic="$(read_bytes_u8 "$bin_path" 0 4 | awk '{print $1" "$2" "$3" "$4}')"
+	[ "$magic" = "127 69 76 70" ] || return 1
+	elf_endian="$(get_endian "$bin_path")"
 	if [ "$elf_endian" = "1" ]; then
-		elf_mach="$(od -An -t u1 -j 18 -N 2 "$bin_path" | awk '{print $1 + $2*256}')"
+		elf_mach="$(read_bytes_u8 "$bin_path" 18 2 | awk '{print ($1 + 0) + ($2 + 0)*256}')"
 	else
-		elf_mach="$(od -An -t u1 -j 18 -N 2 "$bin_path" | awk '{print $1*256 + $2}')"
+		elf_mach="$(read_bytes_u8 "$bin_path" 18 2 | awk '{print ($1 + 0)*256 + ($2 + 0)}')"
 	fi
 	[ "$elf_mach" = "$expected_mach" ]
 }
@@ -357,10 +412,11 @@ ver_gt() {
 	}'
 }
 
-# Проверяет страну, IP и реальный TTFB-пинг через SOCKS5 с резервными GeoIP-источниками.
+# Быстрый зонд: один запрос к Cloudflare trace с коротким лимитом, чтобы не подвешивать RPC/XHR
 probe_socks_endpoint() {
 	sock_addr="$1"
-	t_out="${2:-6}"
+	t_out="${2:-5}"
+	[ "$t_out" -gt 7 ] && t_out=7
 	cc=""; ip=""; secs=""
 
 	out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
@@ -374,32 +430,6 @@ probe_socks_endpoint() {
 			;;
 	esac
 
-	if [ -z "$cc" ]; then
-		out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-			-w '\n__OWRT_T__%{time_starttransfer}' https://api.ip.sb/geoip 2>/dev/null || true)"
-		case "$out" in
-			*__OWRT_T__*)
-				secs="${out##*__OWRT_T__}"
-				body="${out%__OWRT_T__*}"
-				cc="$(jsonfilter -s "$body" -e '@.country_code' 2>/dev/null || true)"
-				ip="$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null || true)"
-				;;
-		esac
-	fi
-
-	if [ -z "$cc" ]; then
-		out="$(curl -4 -fsS --connect-timeout 3 --max-time "$t_out" --socks5-hostname "$sock_addr" \
-			-w '\n__OWRT_T__%{time_starttransfer}' https://ipinfo.io/json 2>/dev/null || true)"
-		case "$out" in
-			*__OWRT_T__*)
-				secs="${out##*__OWRT_T__}"
-				body="${out%__OWRT_T__*}"
-				cc="$(jsonfilter -s "$body" -e '@.country' 2>/dev/null || true)"
-				ip="$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null || true)"
-				;;
-		esac
-	fi
-
 	[ -n "$cc" ] || return 1
 	ms="$(awk -v s="$secs" 'BEGIN { if (s ~ /^[0-9.]+$/ && s > 0) printf "%d", s*1000; else print 999 }')"
 	printf '%s|%s|%s\n' "$cc" "$ip" "$ms"
@@ -411,11 +441,57 @@ probe_scan_endpoint() {
 	probe_socks_endpoint "$sock_addr" "$t_out"
 }
 
+# Обновляет запись о конкретной стране в scan-results.json (например, после успешного ручного переключения или probe)
+sync_country_in_scanfile() {
+	c_code="$1"
+	c_exit="$2"
+	c_ip="$3"
+	c_ms="$4"
+	c_state="$5"
+	[ -n "$c_code" ] || return 0
+	[ -s "$SCANFILE" ] || return 0
+	raw_res="$(sed -n 's/.*"results":\(\[.*\]\).*/\1/p' "$SCANFILE" | head -n 1)"
+	[ -n "$raw_res" ] || return 0
+	clean_items="$(printf '%s' "$raw_res" | sed 's/^\[//; s/\]$//; s/},{/}\n{/g')"
+	lat_val="null"
+	[ "$c_state" = "ok" ] && case "$c_ms" in ''|*[!0-9]*) lat_val="null" ;; *) lat_val="$c_ms" ;; esac
+	new_entry="{\"country\":\"$(json_escape "$c_code")\",\"exit_country\":\"$(json_escape "$c_exit")\",\"ip\":\"$(json_escape "$c_ip")\",\"latency_ms\":${lat_val},\"state\":\"$(json_escape "$c_state")\"}"
+	updated_items="$(printf '%s\n' "$clean_items" | awk -v code="$c_code" -v rep="$new_entry" '
+		BEGIN { found=0; first=1 }
+		length($0) > 0 {
+			if (index($0, "\"country\":\"" code "\"") > 0) {
+				if (!first) printf ",";
+				printf "%s", rep;
+				found=1; first=0;
+			} else {
+				if (!first) printf ",";
+				printf "%s", $0;
+				first=0;
+			}
+		}
+		END {
+			if (found == 0) {
+				if (!first) printf ",";
+				printf "%s", rep;
+			}
+		}
+	')"
+	cur_run="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.running' 2>/dev/null || echo false)"
+	cur_mode="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.mode' 2>/dev/null || echo manual)"
+	cur_best="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.best' 2>/dev/null || echo "")"
+	cur_best_ms="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.best_ms' 2>/dev/null || echo null)"
+	[ -n "$cur_best_ms" ] || cur_best_ms="null"
+	cur_comp="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.completed' 2>/dev/null || echo 0)"
+	cur_tot="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.total' 2>/dev/null || echo 31)"
+	cur_msg="$(jsonfilter -s "$(cat "$SCANFILE")" -e '@.message' 2>/dev/null || echo "")"
+	write_scan_atomic "{\"running\":${cur_run},\"mode\":\"$(json_escape "$cur_mode")\",\"current\":\"\",\"best\":\"$(json_escape "$cur_best")\",\"best_ms\":${cur_best_ms},\"completed\":${cur_comp},\"total\":${cur_tot},\"message\":\"$(json_escape "$cur_msg")\",\"results\":[${updated_items}]}"
+}
+
 BOOT_FAIL_MARKER=/var/run/owrt-psiphon-boot-scan.done
 BACKOFF_FILE=/var/run/owrt-psiphon-backoff.state
-MAX_BOOT_RUNTIME=180
-MAX_FAILOVER_RUNTIME=150
-MAX_FULL_RUNTIME=300
+MAX_BOOT_RUNTIME=240
+MAX_FAILOVER_RUNTIME=180
+MAX_FULL_RUNTIME=420
 MAX_CONSECUTIVE_FAILS=3
 
 has_wan_link() {
@@ -442,7 +518,6 @@ record_failure_backoff() {
 		case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
 	fi
 	fails=$((fails + 1))
-	# Растущая пауза при серии неудач (блокировки/сбои сети): 15m -> 30m -> 60m макс
 	delay=900
 	[ "$fails" -eq 2 ] && delay=1800
 	[ "$fails" -ge 3 ] && delay=3600
@@ -460,7 +535,7 @@ clear_failure_backoff() {
 
 probe_internal() {
 	port_listening || { rm -f "$PROBE_FILE"; return 1; }
-	res="$(probe_socks_endpoint "${BIND}:${PORT}" 7)" || { rm -f "$PROBE_FILE"; return 1; }
+	res="$(probe_socks_endpoint "${BIND}:${PORT}" 5)" || { rm -f "$PROBE_FILE"; return 1; }
 	cc="$(printf '%s' "$res" | cut -d'|' -f1)"
 	ip="$(printf '%s' "$res" | cut -d'|' -f2)"
 	ms="$(printf '%s' "$res" | cut -d'|' -f3)"
@@ -468,11 +543,13 @@ probe_internal() {
 	tmp_p="${PROBE_FILE}.tmp.$$"
 	printf "PROBE_COUNTRY='%s'\nPROBE_IP='%s'\nPROBE_MS='%s'\n" "$cc" "$ip" "$ms" > "$tmp_p"
 	mv -f "$tmp_p" "$PROBE_FILE"
+	sync_country_in_scanfile "$COUNTRY" "$cc" "$ip" "$ms" "ok"
 }
 
 wait_socks_ready() {
-	max_wait="${1:-26}"; elapsed=0
+	max_wait="${1:-20}"; elapsed=0
 	while [ "$elapsed" -lt "$max_wait" ]; do
+		[ -f "$STOPPED_FLAG" ] && return 1
 		managed_pid >/dev/null || return 1
 		if port_listening && probe_internal; then return 0; fi
 		sleep 1
@@ -495,19 +572,18 @@ sync_cron() {
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
+# status() читает состояние мгновенно без сетевых вызовов, чтобы LuCI RPC не ловил XHR timeout
 status() {
 	running=false; pid=""; listening=false; socks_ok=false; exit_country=""; exit_ip=""; latency=""
 	if p="$(managed_pid)"; then running=true; pid="$p"; fi
 	port_listening && listening=true
-	if [ "$running" = true ] && [ "$listening" = true ] && probe_internal; then
+	if [ "$running" = true ] && [ "$listening" = true ] && [ -s "$PROBE_FILE" ]; then
 		socks_ok=true
 		exit_country="$(sed -n 's/^PROBE_COUNTRY=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 		exit_ip="$(sed -n 's/^PROBE_IP=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
 		latency="$(sed -n 's/^PROBE_MS=//p' "$PROBE_FILE" | tr -d "'" | head -n 1)"
-	else
-		rm -f "$PROBE_FILE"
 	fi
-	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.7)"
+	app_version="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.6.1)"
 	version="v1.2.6"
 	if [ -x "$BIN" ]; then
 		v="$("$BIN" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
@@ -524,8 +600,9 @@ status() {
 }
 
 check_update() {
-	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.5.7)"
-	remote_head="$(curl -fsSL --max-time 8 "${REPO_URL}?t=$(date +%s)" 2>/dev/null | head -n 5 || true)"
+	local_ver="$(cat "$APP/app.version" 2>/dev/null | head -n 1 | tr -d '\r\n' || echo 0.6.1)"
+	remote_raw="$(curl -fsSL --max-time 8 "${REPO_URL}?t=$(date +%s)" 2>/dev/null || true)"
+	remote_head="$(printf '%s\n' "$remote_raw" | head -n 5)"
 	[ -n "$remote_head" ] || { printf '{"ok":false,"message":"Не удалось связаться с GitHub"}\n'; return 1; }
 	remote_ver="$(printf '%s\n' "$remote_head" | sed -n 's/^# VERSION=\([0-9][0-9.]*\).*/\1/p' | head -n 1)"
 	[ -n "$remote_ver" ] || { printf '{"ok":false,"message":"Не удалось определить версию на GitHub"}\n'; return 1; }
@@ -540,7 +617,7 @@ apply_update() {
 	scan_active && { reply false 'Дождитесь завершения автоподбора перед обновлением'; return 1; }
 	tmp_upd="/tmp/owrt-psiphon-update.$$.sh"
 	curl -fsSL --max-time 15 "${REPO_URL}?t=$(date +%s)" -o "$tmp_upd" 2>/dev/null || { rm -f "$tmp_upd"; reply false 'Ошибка загрузки обновления с GitHub'; return 1; }
-	head -n 5 "$tmp_upd" | grep -q 'OWRTPsiphon' || { rm -f "$tmp_upd"; reply false 'Загруженный файл не прошел проверку'; return 1; }
+	[ -s "$tmp_upd" ] && head -n 5 "$tmp_upd" | grep -q 'OWRTPsiphon' || { rm -f "$tmp_upd"; reply false 'Загруженный файл не прошел проверку'; return 1; }
 	chmod 755 "$tmp_upd"
 	reply true 'Обновление запущено. Страница перезагрузится автоматически.'
 	if command -v setsid >/dev/null 2>&1; then
@@ -577,7 +654,7 @@ apply_warp_update() {
 	expected_mach="$WP_ELF_MACH"
 	dl_url="$(jsonfilter -s "$rel_json" -e '@.assets[*].browser_download_url' 2>/dev/null | grep "${target_arch}\.zip$" | head -n 1 || true)"
 	[ -n "$dl_url" ] || { reply false "Не найден архив ${target_arch} в релизе"; return 1; }
-	
+
 	tmp_w="/tmp/owrt-warp-upd.$$"
 	mkdir -p "$tmp_w"
 	if ! curl -fL --max-time 30 "$dl_url" -o "$tmp_w/wp.zip" 2>/dev/null; then
@@ -619,62 +696,180 @@ apply_warp_update() {
 	reply true "warp-plus (${target_arch}) успешно обновлён"
 }
 
-start_service() {
-	scan_active && { reply false 'Автоподбор выполняется. Дождитесь его завершения.'; return 1; }
-	if managed_pid >/dev/null; then
-		if wait_socks_ready 8; then reply true 'Служба уже запущена'
-		else reply false 'Процесс запущен, но SOCKS5 не отвечает'; fi
+check_current_or_find_first() {
+	if ! has_wan_link; then
+		return 1
+	fi
+	if wait_socks_ready 12; then
+		clear_failure_backoff
+		cur_c="$(uci -q get ${CONFIG}.country || echo "$COUNTRY")"
+		uci -q set ${CONFIG}.last_good_country="$cur_c" && uci -q commit owrt-psiphon
 		return 0
 	fi
-	rm -f "$PROBE_FILE"
+	if backoff_active; then
+		return 1
+	fi
+	scan_worker 2 || true
+	if port_listening && probe_internal; then
+		clear_failure_backoff
+		cur_c="$(uci -q get ${CONFIG}.country || echo "$COUNTRY")"
+		uci -q set ${CONFIG}.last_good_country="$cur_c" && uci -q commit owrt-psiphon
+		return 0
+	fi
+	record_failure_backoff
+	return 1
+}
+
+boot_check() {
+	[ "$(uci -q get ${CONFIG}.enabled || echo 0)" = "1" ] || return 0
+	[ -f "$STOPPED_FLAG" ] && return 0
+	scan_active && return 0
+	acquire_lock "$WATCHDOG_LOCK" || return 0
+	trap 'release_lock "$WATCHDOG_LOCK"; exit 130' INT TERM
+	trap 'release_lock "$WATCHDOG_LOCK"' EXIT
+	check_current_or_find_first || true
+}
+
+start_service() {
+	if scan_active; then
+		stop_scan_processes "Остановлено для запуска службы"
+	fi
+	rm -f "$STOPPED_FLAG" "$PROBE_FILE"
+	if managed_pid >/dev/null; then
+		if wait_socks_ready 12; then reply true 'Служба уже запущена'
+		else reply false 'Процесс запущен, но SOCKS5 пока не отвечает'; fi
+		return 0
+	fi
 	uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 	/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-	if wait_socks_ready 26; then
+	if wait_socks_ready 14; then
 		uci -q set ${CONFIG}.last_good_country="$COUNTRY" && uci -q commit owrt-psiphon
 		reply true "Служба запущена ($COUNTRY)"
+		return 0
+	fi
+	if has_wan_link && ! port_listening && ! backoff_active; then
+		scan_worker 2 || true
+		new_c="$(uci -q get ${CONFIG}.country || echo "$COUNTRY")"
+		if managed_pid >/dev/null && port_listening; then
+			if probe_internal >/dev/null 2>&1; then
+				clear_failure_backoff
+				reply true "Текущий узел не ответил; запущен первый рабочий ($new_c)"
+				return 0
+			fi
+		fi
+		record_failure_backoff
+	fi
+	if port_listening; then
+		reply true "Туннель запущен ($COUNTRY); проверка IP выполнится в фоне"
 	else
-		reply false 'SOCKS5 не поднялся за 26 с'
+		reply false 'SOCKS5 не поднялся и не удалось найти рабочий узел'
 		return 1
 	fi
 }
 
+stop_scan_processes() {
+	reason_msg="${1:-Остановлено пользователем}"
+	scan_pid="$(cat "$SCAN_PIDFILE" 2>/dev/null || true)"
+	lock_pid=""
+	[ -d "$SCAN_LOCK" ] && lock_pid="$(cat "${SCAN_LOCK}/pid" 2>/dev/null || true)"
+
+	for p in "$scan_pid" "$lock_pid"; do
+		case "$p" in ''|*[!0-9]*) ;; *)
+			kill -TERM "$p" 2>/dev/null || true
+		esac
+	done
+
+	if command -v pgrep >/dev/null 2>&1; then
+		for wp in $(pgrep -f "warp-plus.*127\.0\.0\.1:180" 2>/dev/null || true); do
+			kill -TERM "$wp" 2>/dev/null || true
+		done
+	fi
+
+	i=0
+	while [ "$i" -lt 8 ]; do
+		alive=0
+		for p in "$scan_pid" "$lock_pid"; do
+			case "$p" in ''|*[!0-9]*) ;; *) kill -0 "$p" 2>/dev/null && alive=1 ;; esac
+		done
+		[ "$alive" -eq 0 ] && break
+		usleep 200000 2>/dev/null || sleep 1
+		i=$((i + 1))
+	done
+
+	for p in "$scan_pid" "$lock_pid"; do
+		case "$p" in ''|*[!0-9]*) ;; *)
+			kill -KILL "$p" 2>/dev/null || true
+			wait "$p" 2>/dev/null || true
+		esac
+	done
+
+	if command -v pgrep >/dev/null 2>&1; then
+		for wp in $(pgrep -f "warp-plus.*127\.0\.0\.1:180" 2>/dev/null || true); do
+			kill -KILL "$wp" 2>/dev/null || true
+		done
+	fi
+
+	rm -rf "$SCAN_LOCK" /tmp/owrt-psiphon-scan-cache.* /tmp/owrt-scan-lines.*
+	rm -f "$SCAN_PIDFILE"
+	if [ -s "$SCANFILE" ]; then
+		cur_res="$(sed -n 's/.*"results":\(\[.*\]\).*/\1/p' "$SCANFILE" | head -n 1)"
+		[ -n "$cur_res" ] || cur_res="[]"
+		write_scan_atomic "{\"running\":false,\"mode\":\"stopped\",\"current\":\"\",\"best\":\"\",\"best_ms\":null,\"completed\":0,\"total\":31,\"message\":\"$(json_escape "$reason_msg")\",\"results\":$cur_res}"
+	fi
+}
+
 stop_service() {
-	scan_active && { reply false 'Автоподбор выполняется. Остановка доступна после его завершения.'; return 1; }
+	: > "$STOPPED_FLAG"
+	stop_scan_processes "Остановлено пользователем"
 	uci -q set ${CONFIG}.enabled='0' && uci -q commit owrt-psiphon
 	/etc/init.d/owrt-psiphon stop >/dev/null 2>&1 || true
+	if command -v pgrep >/dev/null 2>&1; then
+		for wp in $(pgrep -f "$BIN" 2>/dev/null || true); do
+			kill -TERM "$wp" 2>/dev/null || true
+		done
+		sleep 1
+		for wp in $(pgrep -f "$BIN" 2>/dev/null || true); do
+			kill -KILL "$wp" 2>/dev/null || true
+		done
+	fi
 	rm -f "$PROBE_FILE"
-	reply true 'Служба остановлена'
+	reply true 'Служба и все фоновые процессы остановлены'
 }
 
 safe_restart() {
 	new_country="$1"
 	old_country="$(uci -q get ${CONFIG}.last_good_country || uci -q get ${CONFIG}.country || echo FI)"
-	rm -f "$PROBE_FILE"
+	rm -f "$STOPPED_FLAG" "$PROBE_FILE"
 	uci -q set ${CONFIG}.country="$new_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 	/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-	if wait_socks_ready 24; then
+	if wait_socks_ready 18; then
 		uci -q set ${CONFIG}.last_good_country="$new_country" && uci -q commit owrt-psiphon
 		reply true "Переключено на $new_country"
 		return 0
-	else
-		if [ -n "$old_country" ] && [ "$old_country" != "$new_country" ]; then
-			uci -q set ${CONFIG}.country="$old_country" && uci -q commit owrt-psiphon
-			/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
-			if wait_socks_ready 22; then
-				reply false "Узел $new_country не ответил; выполнен откат на $old_country"
-			else
-				reply false "Узел $new_country не ответил; откат на $old_country также не поднялся"
-			fi
-		else
-			reply false "Узел $new_country не прошёл проверку"
-		fi
-		return 1
 	fi
+	# Если процесс поднялся и порт слушает, но зонд не успел за 18 с — не делаем ложный откат
+	if managed_pid >/dev/null 2>&1 && port_listening; then
+		uci -q set ${CONFIG}.last_good_country="$new_country" && uci -q commit owrt-psiphon
+		reply true "Переключено на $new_country (SOCKS запущен)"
+		return 0
+	fi
+	if [ -n "$old_country" ] && [ "$old_country" != "$new_country" ]; then
+		uci -q set ${CONFIG}.country="$old_country" && uci -q commit owrt-psiphon
+		/etc/init.d/owrt-psiphon restart >/dev/null 2>&1 || true
+		if wait_socks_ready 15; then
+			reply false "Узел $new_country не ответил; выполнен откат на $old_country"
+		else
+			reply false "Узел $new_country не ответил; откат на $old_country также не поднялся"
+		fi
+	else
+		reply false "Узел $new_country не прошёл проверку"
+	fi
+	return 1
 }
 
 set_country() {
 	c="$1"
-	scan_active && { reply false 'Автоподбор выполняется. Переключение страны будет доступно после его завершения.'; return 1; }
+	scan_active && { reply false 'Автоподбор выполняется. Нажмите «Остановить» или дождитесь завершения.'; return 1; }
 	valid_country "$c" || { reply false 'Неверный код страны'; return 1; }
 	if managed_pid >/dev/null; then
 		safe_restart "$c"
@@ -716,7 +911,7 @@ probe() {
 
 scan_status() {
 	if [ -s "$SCANFILE" ]; then cat "$SCANFILE"
-	else printf '{"running":false,"message":"Автоподбор ещё не запускался","results":[]}\n'; fi
+	else printf '{"running":false,"message":"","results":[]}\n'; fi
 }
 
 scan_start() {
@@ -725,6 +920,7 @@ scan_start() {
 		reply false 'Автоподбор уже выполняется'
 		return 1
 	fi
+	rm -f "$STOPPED_FLAG"
 	write_scan_atomic '{"running":true,"mode":"full","current":"","best":"","best_ms":null,"completed":0,"total":31,"message":"Подготовка к проверке","results":[]}'
 	if command -v setsid >/dev/null 2>&1; then
 		setsid "$0" _scan </dev/null >/dev/null 2>&1 &
@@ -757,16 +953,14 @@ stop_probe_proc() {
 	[ -n "$p" ] || return 0
 	kill -TERM "$p" 2>/dev/null || true
 	i=0
-	while [ "$i" -lt 10 ] && kill -0 "$p" 2>/dev/null; do
-		usleep 100000 2>/dev/null || sleep 1
+	while [ "$i" -lt 8 ] && kill -0 "$p" 2>/dev/null; do
+		usleep 200000 2>/dev/null || sleep 1
 		i=$((i + 1))
 	done
 	kill -KILL "$p" 2>/dev/null || true
 	wait "$p" 2>/dev/null || true
 }
 
-# boot_mode=1: фоновый старт при загрузке — не торопясь пингуем в порядке близости к РФ, садимся на первый приемлемый узел и останавливаем скан.
-# boot_mode=0: ручной автоподбор — полноценно сканируем все страны, сортируем по пингу и выбираем лучший.
 scan_worker() {
 	boot_mode="${1:-0}"
 	acquire_lock "$SCAN_LOCK" || return 0
@@ -781,7 +975,7 @@ scan_worker() {
 	restore_required="$was_running"
 	probe_pid=""
 	tmp_lines="/tmp/owrt-scan-lines.$$"
-	scan_cache="/tmp/owrt-psiphon-scan-cache.$$"
+	scan_cache_base="/tmp/owrt-psiphon-scan-cache.$$"
 	scan_port=18086
 	cleanup_done=0
 	start_ts="$(date +%s 2>/dev/null || echo 0)"
@@ -793,12 +987,12 @@ scan_worker() {
 		[ "$cleanup_done" = 1 ] && return 0
 		cleanup_done=1
 		stop_probe_proc "$probe_pid"
-		rm -rf "$scan_cache"
+		rm -rf "$scan_cache_base"
 		rm -f "$SCAN_PIDFILE" "$tmp_lines"
-		if [ "$restore_required" = 1 ] && [ "$was_running" = 1 ] && ! managed_pid >/dev/null 2>&1; then
+		if [ ! -f "$STOPPED_FLAG" ] && [ "$restore_required" = 1 ] && [ "$was_running" = 1 ] && ! managed_pid >/dev/null 2>&1; then
 			uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-			wait_socks_ready 24 >/dev/null 2>&1 || true
+			wait_socks_ready 20 >/dev/null 2>&1 || true
 		fi
 		release_lock "$SCAN_LOCK"
 	}
@@ -832,11 +1026,7 @@ scan_worker() {
 		fi
 	fi
 
-	mkdir -p "$scan_cache"
-	if [ -d "$APP/cache" ]; then
-		cp -r "$APP/cache"/* "$scan_cache"/ 2>/dev/null || true
-	fi
-
+	mkdir -p "$scan_cache_base"
 	ordered_scan="$SCAN_LIST"
 
 	: > "$tmp_lines"
@@ -849,6 +1039,7 @@ scan_worker() {
 	[ "$boot_mode" = "2" ] && mode_name="failover"
 
 	for c in $ordered_scan; do
+		[ -f "$STOPPED_FLAG" ] && break
 		now_ts="$(date +%s 2>/dev/null || echo 0)"
 		elapsed_total=$((now_ts - start_ts))
 		if [ "$start_ts" -gt 0 ] && [ "$elapsed_total" -ge "$max_runtime" ]; then
@@ -865,44 +1056,43 @@ scan_worker() {
 		fi
 		write_scan_atomic "{\"running\":true,\"mode\":\"$mode_name\",\"current\":\"$c\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"$(json_escape "$status_msg")\",\"results\":$(build_sorted_json "$tmp_lines")}"
 
+		c_cache="${scan_cache_base}/${c}"
+		mkdir -p "$c_cache"
+
 		if [ "$boot_mode" != "0" ] && command -v nice >/dev/null 2>&1; then
 			if [ -n "$ENDPOINT" ]; then
-				nice -n 10 "$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$scan_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
+				nice -n 10 "$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$c_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
 			else
-				nice -n 10 "$BIN" -4 --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$scan_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
+				nice -n 10 "$BIN" -4 --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$c_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
 			fi
 		else
 			if [ -n "$ENDPOINT" ]; then
-				"$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$scan_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
+				"$BIN" -4 -e "$ENDPOINT" --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$c_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
 			else
-				"$BIN" -4 --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$scan_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
+				"$BIN" -4 --cfon --country "$c" -b "127.0.0.1:${scan_port}" --cache-dir "$c_cache" --test-url "$TEST_URL" >/dev/null 2>&1 &
 			fi
 		fi
 		probe_pid=$!
 		printf '%s\n' "$probe_pid" > "$SCAN_PIDFILE"
 
 		res=""; got=""; ip=""; ms="999999"; state="timeout"; rank=2; ticks=0; ready=0
-		max_ticks=40
-		[ "$boot_mode" != "0" ] && max_ticks=56
+		max_ticks=80
 		while [ "$ticks" -lt "$max_ticks" ]; do
+			[ -f "$STOPPED_FLAG" ] && break
 			if ! kill -0 "$probe_pid" 2>/dev/null; then break; fi
 			if port_in_use "$scan_port"; then ready=1; break; fi
 			usleep 250000 2>/dev/null || { sleep 1; ticks=$((ticks + 3)); }
 			ticks=$((ticks + 1))
 		done
 
-		if [ "$ready" = 1 ]; then
-			probe_t=6
-			[ "$boot_mode" != "0" ] && probe_t=8
-			attempt=0
-			while [ "$attempt" -lt 2 ]; do
-				res="$(probe_scan_endpoint "127.0.0.1:${scan_port}" "$probe_t" || true)"
-				[ -n "$res" ] && break
-				kill -0 "$probe_pid" 2>/dev/null || break
-				sleep 1
-				attempt=$((attempt + 1))
-			done
+		if [ -f "$STOPPED_FLAG" ]; then
+			stop_probe_proc "$probe_pid"
+			probe_pid=""
+			break
+		fi
 
+		if [ "$ready" = 1 ]; then
+			res="$(probe_scan_endpoint "127.0.0.1:${scan_port}" 6 || true)"
 			if [ -n "$res" ]; then
 				got="$(printf '%s' "$res" | cut -d'|' -f1)"
 				ip="$(printf '%s' "$res" | cut -d'|' -f2)"
@@ -923,6 +1113,7 @@ scan_worker() {
 
 		stop_probe_proc "$probe_pid"
 		probe_pid=""
+		rm -rf "$c_cache"
 		rm -f "$SCAN_PIDFILE"
 
 		sort_ms="$ms"
@@ -931,7 +1122,6 @@ scan_worker() {
 		completed=$((completed + 1))
 		cur_best_ms="$( [ "$best_ms" -eq 999999 ] && echo null || echo "$best_ms" )"
 
-		# При загрузке (boot_mode=1) и при фейловере (boot_mode=2): садимся на первый живой узел и останавливаем скан.
 		if [ "$boot_mode" != "0" ] && [ "$state" = "ok" ]; then
 			best_country="$c"
 			best_ms="$ms"
@@ -939,9 +1129,13 @@ scan_worker() {
 		fi
 
 		write_scan_atomic "{\"running\":true,\"mode\":\"$mode_name\",\"current\":\"\",\"best\":\"$best_country\",\"best_ms\":$cur_best_ms,\"completed\":$completed,\"total\":$total,\"message\":\"$(json_escape "Проверено $completed из $total")\",\"results\":$(build_sorted_json "$tmp_lines")}"
-
-		[ "$boot_mode" != "0" ] && sleep 1
 	done
+
+	if [ -f "$STOPPED_FLAG" ]; then
+		restore_required=0
+		write_scan_atomic "{\"running\":false,\"mode\":\"$mode_name\",\"current\":\"\",\"best\":\"\",\"best_ms\":null,\"completed\":$completed,\"total\":$total,\"message\":\"Остановлено пользователем\",\"results\":$(build_sorted_json "$tmp_lines")}"
+		return 0
+	fi
 
 	final_json="$(build_sorted_json "$tmp_lines")"
 	if [ -n "$best_country" ]; then
@@ -949,7 +1143,7 @@ scan_worker() {
 		if [ "$was_running" = 1 ]; then
 			uci -q set ${CONFIG}.country="$best_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 			/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-			if wait_socks_ready 26; then
+			if wait_socks_ready 20; then
 				uci -q set ${CONFIG}.last_good_country="$best_country" && uci -q commit owrt-psiphon
 				restore_required=0
 				if [ "$boot_mode" = "1" ]; then
@@ -962,12 +1156,12 @@ scan_worker() {
 			else
 				uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 				/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-				if wait_socks_ready 22; then restore_required=0; msg="Узел $best_country не поднялся; восстановлен прежний $old_country."
+				if wait_socks_ready 15; then restore_required=0; msg="Узел $best_country не поднялся; восстановлен прежний $old_country."
 				else msg="Узел $best_country не поднялся. Не удалось проверить восстановление $old_country."; fi
 			fi
 		else
 			uci -q set ${CONFIG}.country="$best_country" && uci -q commit owrt-psiphon
-			msg="Лучший узел: $best_country (${best_ms} мс). Выбран, но туннель оставлен остановленным."
+			msg="Лучший узел: $best_country (${best_ms} мс). Страна сохранена (туннель остановлен)."
 		fi
 	else
 		if [ "$boot_mode" = "2" ]; then
@@ -984,7 +1178,7 @@ scan_worker() {
 			if [ "$was_running" = 1 ]; then
 				uci -q set ${CONFIG}.country="$old_country" && uci -q set ${CONFIG}.enabled='1' && uci -q commit owrt-psiphon
 				/etc/init.d/owrt-psiphon start >/dev/null 2>&1 || true
-				if wait_socks_ready 22; then restore_required=0; fi
+				if wait_socks_ready 15; then restore_required=0; fi
 			fi
 			msg="Рабочих узлов не найдено. Прежняя страна $old_country сохранена."
 		fi
@@ -994,23 +1188,21 @@ scan_worker() {
 
 watchdog() {
 	[ "$(uci -q get ${CONFIG}.enabled || echo 0)" = "1" ] || return 0
+	[ -f "$STOPPED_FLAG" ] && return 0
 	scan_active && return 0
 	acquire_lock "$WATCHDOG_LOCK" || return 0
 	trap 'release_lock "$WATCHDOG_LOCK"; exit 130' INT TERM
 	trap 'release_lock "$WATCHDOG_LOCK"' EXIT
 
-	# Если нет даже WAN-маршрута (полный обрыв сети/кабеля), не тратим ресурсы на сканирование.
 	if ! has_wan_link; then
 		return 0
 	fi
 
-	# Сначала проверяем живость текущего узла: если отвечает — сбрасываем счётчик сбоев и выходим.
 	if probe_internal; then
 		clear_failure_backoff
 		return 0
 	fi
 
-	# Если включён бэкофф после серии неудач (например, массовая блокировка/даунтайм), ждём окно без зацикливания.
 	if backoff_active; then
 		return 0
 	fi
@@ -1027,7 +1219,6 @@ watchdog() {
 		done
 	fi
 
-	# Ищем первый живой узел по списку; при провале фиксируем бэкофф и засыпаем до следующего цикла cron.
 	scan_worker 2 || true
 	if ! probe_internal; then
 		record_failure_backoff
@@ -1035,7 +1226,7 @@ watchdog() {
 }
 
 uninstall_all() {
-	scan_active && { reply false 'Дождитесь завершения автоподбора перед удалением'; return 1; }
+	stop_scan_processes "Остановлено при удалении"
 	reply true 'Удаление OWRTPsiphon запущено.'
 	uninst_cmd='
 		sleep 1
@@ -1073,6 +1264,7 @@ case "${1:-status}" in
 	_scan) scan_worker 0 ;;
 	_scan_boot) scan_worker 1 ;;
 	_scan_failover) scan_worker 2 ;;
+	_boot_check) boot_check ;;
 	watchdog) watchdog ;;
 	check_update) check_update ;;
 	apply_update) apply_update ;;
@@ -1141,19 +1333,24 @@ var callStatus = rpc.declare({ object: 'owrt-psiphon', method: 'status', expect:
     callApplyWarpUpdate = rpc.declare({ object: 'owrt-psiphon', method: 'apply_warp_update', expect: {} }),
     callUninstall = rpc.declare({ object: 'owrt-psiphon', method: 'uninstall', expect: {} });
 
-// Порядок по удалённости и типовым пингам от РФ (сначала быстрые европейские узлы)
 var CODES = ['FI','EE','LV','SE','PL','DE','NL','DK','NO','CZ','AT','CH','SK','HU','RO','BG','FR','BE','GB','IE','ES','IT','PT','HR','RS','CA','US','IN','SG','JP','AU'];
 
 return view.extend({
 	render: function() {
-		var status = {}, scan = {}, pollActive = false, busy = false, lastBusyWarn = 0, sub = 'socks5://192.168.1.1:8086#OWRTPsiphon';
+		var status = {}, scan = {}, pollActive = false, busy = false, pendingAction = '', lastBusyWarn = 0, sub = 'socks5://192.168.1.1:8086#OWRTPsiphon';
 		var root = E('div', { 'class': 'cbi-map' }),
 		    stateTable = E('div', { 'class': 'table' }),
-		    scanBox = E('div', { 'style': 'margin:8px 0;font-style:italic' }),
-		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.5.7'),
+		    liveLine = E('div', { 'class': 'owrt-live-line', 'style': 'display:none' }),
+		    appVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v0.6.1'),
 		    appUpdStatus = E('span', { 'style': 'margin-left:8px' }),
 		    warpVerLabel = E('span', { 'style': 'font-weight:bold;min-width:65px;display:inline-block' }, 'v1.2.6'),
 		    warpUpdStatus = E('span', { 'style': 'margin-left:8px' });
+
+		var btnStart = E('button', { 'class': 'btn cbi-button-positive owrt-act-btn', 'style': 'margin:4px 8px 4px 0' }, 'Запустить'),
+		    btnStop = E('button', { 'class': 'btn cbi-button-negative owrt-act-btn', 'style': 'margin:4px 8px 4px 0' }, 'Остановить'),
+		    btnProbe = E('button', { 'class': 'btn cbi-button owrt-act-btn', 'style': 'margin:4px 8px 4px 0' }, 'Проверить SOCKS'),
+		    btnUninstall = E('button', { 'class': 'btn cbi-button-negative owrt-act-btn', 'style': 'margin:4px 8px 4px 0' }, 'Удалить приложение'),
+		    btnScan = E('button', { 'class': 'btn cbi-button-positive owrt-act-btn', 'style': 'margin:0' }, 'Автоподбор по пингу');
 
 		var chkAutostart = E('input', { 'type': 'checkbox' });
 
@@ -1170,12 +1367,48 @@ return view.extend({
 			ui.addNotification(null, E('p', {}, m), t || 'info');
 		}
 
+		function setBtnState(el, loading, labelText) {
+			if (!el) return;
+			el.disabled = !!loading;
+			if (loading) {
+				el.classList.add('is-loading');
+				el.textContent = '';
+				el.appendChild(E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }));
+				el.appendChild(E('span', {}, labelText));
+			} else {
+				el.classList.remove('is-loading');
+				el.textContent = labelText;
+			}
+		}
+
+		function syncButtons() {
+			var isStarting = (pendingAction === 'start');
+			var isStopping = (pendingAction === 'stop');
+			var isProbing = (pendingAction === 'probe');
+			var isScanning = (pendingAction === 'scan') || !!scan.running;
+			var locked = busy || !!scan.running;
+
+			setBtnState(btnStart, isStarting, isStarting ? 'Запуск…' : 'Запустить');
+			btnStart.disabled = locked || isStopping;
+
+			setBtnState(btnStop, isStopping, isStopping ? 'Остановка…' : 'Остановить');
+			btnStop.disabled = (pendingAction === 'uninstall');
+
+			setBtnState(btnProbe, isProbing, isProbing ? 'Проверка…' : 'Проверить SOCKS');
+			btnProbe.disabled = locked;
+
+			setBtnState(btnScan, isScanning, isScanning ? (scan.running ? 'Подбор идёт…' : 'Запуск…') : 'Автоподбор по пингу');
+			btnScan.disabled = locked;
+
+			btnUninstall.disabled = locked || isStopping;
+		}
+
 		function guardBusy() {
 			if (!busy && !scan.running) return false;
 			var now = Date.now();
 			if (now - lastBusyWarn > 2000) {
 				lastBusyWarn = now;
-				var n = ui.addNotification(null, E('p', {}, 'Подождите завершения текущего процесса…'), 'warning');
+				var n = ui.addNotification(null, E('p', {}, 'Подождите завершения текущего процесса или нажмите «Остановить»…'), 'warning');
 				if (n && n.parentNode) {
 					window.setTimeout(function() { if (n.parentNode) n.parentNode.removeChild(n); }, 2500);
 				}
@@ -1211,6 +1444,48 @@ return view.extend({
 			return COUNTRY_NAMES[code] || code;
 		}
 
+		function renderLiveLine() {
+			liveLine.textContent = '';
+			if (pendingAction === 'start') {
+				liveLine.style.display = 'flex';
+				liveLine.appendChild(E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }));
+				liveLine.appendChild(E('span', {}, 'Запускаем warp-plus (' + (status.country || 'FI') + ') и ждём готовность SOCKS5…'));
+				return;
+			}
+			if (pendingAction === 'stop') {
+				liveLine.style.display = 'flex';
+				liveLine.appendChild(E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }));
+				liveLine.appendChild(E('span', {}, 'Останавливаем туннель, автоподбор и фоновые процессы…'));
+				return;
+			}
+			if (pendingAction === 'switch') {
+				liveLine.style.display = 'flex';
+				liveLine.appendChild(E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }));
+				liveLine.appendChild(E('span', {}, 'Переключаем страну и проверяем SOCKS5…'));
+				return;
+			}
+			if (scan.running) {
+				var curCode = scan.current || '';
+				var modeLabel = (scan.mode === 'boot')
+					? 'Фоновый подбор при загрузке: '
+					: ((scan.mode === 'failover') ? 'Поиск живого узла: ' : 'Автоподбор узлов: ');
+				liveLine.style.display = 'flex';
+				liveLine.appendChild(E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }));
+				liveLine.appendChild(E('span', {}, modeLabel + (scan.completed || 0) + '/' + (scan.total || 31) +
+					(curCode ? ' · ' + curCode + ' — ' + countryTitle(curCode) : '')));
+				return;
+			}
+
+			var msg = (scan.message || '').trim();
+			var isStaleStoppedMsg = (msg.indexOf('туннель оставлен остановленным') !== -1 || msg.indexOf('оставлен остановленным') !== -1) && status.running && status.socks_ok;
+			if (msg && !isStaleStoppedMsg && msg !== 'Автоподбор ещё не запускался') {
+				liveLine.style.display = 'block';
+				liveLine.textContent = msg;
+			} else {
+				liveLine.style.display = 'none';
+			}
+		}
+
 		function buildCountrySelect() {
 			var resultMap = {}, ordered = [], seen = {};
 			if (scan.results) {
@@ -1236,13 +1511,18 @@ return view.extend({
 						return;
 					}
 					busy = true;
+					pendingAction = 'switch';
+					syncButtons();
+					renderLiveLine();
 					notify('Переключение на ' + chosen + ' — ' + countryTitle(chosen) + '…', 'info');
 					callSetCountry(chosen).then(function(r) {
 						busy = false;
+						pendingAction = '';
 						notify((r && r.message) || chosen, (r && r.ok) ? 'info' : 'error');
 						return updateStatus();
 					}, function(e) {
 						busy = false;
+						pendingAction = '';
 						notify('Ошибка: ' + e, 'error');
 						return updateStatus();
 					});
@@ -1258,7 +1538,6 @@ return view.extend({
 					else if (r.state === 'untested') stateText = 'не проверялась';
 				}
 				var activeText = (c === cur && status.running && status.socks_ok) ? ' · АКТИВНА' : (c === cur ? ' · выбрана' : '');
-				// Без дублирования кода страны и без emoji-флагов, которые в Windows рисуются как двухбуквенный код
 				return E('option', { 'value': c, 'selected': c === cur ? 'selected' : null },
 					c + ' — ' + name + ' · ' + stateText + activeText);
 			}));
@@ -1275,18 +1554,41 @@ return view.extend({
 				if (whVal === '0' && status.auto_scan_boot == 1) whVal = 'boot';
 				selWatchdog.value = whVal;
 
-				appVerLabel.textContent = 'v' + (status.app_version || '0.5.7');
+				appVerLabel.textContent = 'v' + (status.app_version || '0.6.1');
 				warpVerLabel.textContent = status.version || 'v1.2.6';
 
-				var wp = status.running
-					? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Запущен')
-					: E('span', { 'style': 'color:#dc2626;font-weight:bold' }, 'Остановлен');
+				var wp;
+				if (pendingAction === 'start') {
+					wp = E('span', { 'class': 'owrt-inline-load', 'style': 'color:#2563eb;font-weight:bold' }, [
+						E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }),
+						E('span', {}, 'Запускается…')
+					]);
+				} else if (pendingAction === 'stop') {
+					wp = E('span', { 'class': 'owrt-inline-load', 'style': 'color:#d97706;font-weight:bold' }, [
+						E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }),
+						E('span', {}, 'Останавливается…')
+					]);
+				} else {
+					wp = status.running
+						? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Запущен')
+						: E('span', { 'style': 'color:#dc2626;font-weight:bold' }, 'Остановлен');
+				}
 
-				var sk = status.socks_ok
-					? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Активен (' + status.bind + ':' + status.port + ')')
-					: (status.listening
-						? E('span', { 'style': 'color:#d97706;font-weight:bold' }, 'Нет ответа')
-						: E('span', { 'style': 'color:#dc2626' }, 'Не запущен'));
+				var sk;
+				if (pendingAction === 'start' || pendingAction === 'switch') {
+					sk = E('span', { 'class': 'owrt-inline-load', 'style': 'color:#2563eb;font-weight:bold' }, [
+						E('span', { 'class': 'owrt-spinner', 'aria-hidden': 'true' }),
+						E('span', {}, 'Ожидание готовности…')
+					]);
+				} else if (pendingAction === 'stop') {
+					sk = E('span', { 'style': 'color:#6b7280' }, 'Останавливается…');
+				} else {
+					sk = status.socks_ok
+						? E('span', { 'style': 'color:#16a34a;font-weight:bold' }, 'Активен (' + status.bind + ':' + status.port + ')')
+						: (status.listening
+							? E('span', { 'style': 'color:#d97706;font-weight:bold' }, 'Запущен (' + status.bind + ':' + status.port + ')')
+							: E('span', { 'style': 'color:#dc2626' }, 'Не запущен'));
+				}
 
 				var ipC = status.exit_ip ? (status.exit_ip + (status.exit_country ? ' (' + status.exit_country + ')' : '')) : '—';
 
@@ -1297,11 +1599,7 @@ return view.extend({
 					['Выходной IP', ipC],
 					['Страна выхода', E('div', { 'class': 'owrt-psiphon-country-wrap', 'style': 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:100%' }, [
 						buildCountrySelect(),
-						E('button', {
-							'class': 'btn cbi-button-positive',
-							'style': 'margin:0',
-							'click': function() { action(callScan(), 'Автоподбор запущен'); }
-						}, scan.running ? 'Подбор…' : 'Автоподбор по пингу')
+						btnScan
 					])],
 					['Ссылка для Steer', E('div', { 'style': 'display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap' }, [
 						E('code', { 'style': 'user-select:all' }, sub),
@@ -1313,15 +1611,9 @@ return view.extend({
 						E('div', { 'class': 'td left' }, r[1])
 					]));
 				});
-				if (scan.running) {
-					var curCode = scan.current || '';
-					var modeLabel = (scan.mode === 'boot') ? 'Фоновый подбор при загрузке: ' : ((scan.mode === 'failover') ? 'Поиск живого узла: ' : 'Проверка узлов: ');
-					scanBox.textContent = modeLabel + (scan.completed || 0) + '/' + (scan.total || 31) +
-						(curCode ? ' · ' + curCode + ' — ' + countryTitle(curCode) : '');
-				} else {
-					scanBox.textContent = scan.message || '';
-				}
-				scanBox.style.display = (scan.running || (scan.message && scan.results && scan.results.length)) ? 'block' : 'none';
+
+				syncButtons();
+				renderLiveLine();
 			});
 		}
 
@@ -1330,8 +1622,8 @@ return view.extend({
 			pollActive = true;
 			function tick() {
 				updateStatus().then(function() {
-					if (scan.running) {
-						window.setTimeout(tick, 2500);
+					if (scan.running && pendingAction !== 'stop') {
+						window.setTimeout(tick, 2000);
 					} else {
 						pollActive = false;
 					}
@@ -1339,34 +1631,67 @@ return view.extend({
 					pollActive = false;
 				});
 			}
-			window.setTimeout(tick, 1500);
+			window.setTimeout(tick, 1200);
 		}
 
-		function action(p, okMsg) {
-			if (guardBusy()) return;
+		function runAction(actKey, promiseFn, okMsg, startNotify) {
+			if (actKey !== 'stop' && guardBusy()) return;
+			if (startNotify) notify(startNotify, 'info');
 			busy = true;
-			p.then(function(r) {
+			pendingAction = actKey;
+			syncButtons();
+			renderLiveLine();
+			updateStatus();
+
+			promiseFn().then(function(r) {
 				busy = false;
+				pendingAction = '';
 				notify((r && r.message) || okMsg, (r && r.ok) ? 'info' : 'error');
 				return updateStatus();
 			}).then(function() {
 				pollScan();
 			}, function(e) {
 				busy = false;
+				pendingAction = '';
+				syncButtons();
+				renderLiveLine();
 				notify('Ошибка RPC: ' + e, 'error');
 			});
 		}
 
-		function btn(l, c, fn) {
-			return E('button', {
-				'class': 'btn ' + c,
-				'style': 'margin:4px 8px 4px 0',
-				'click': function() {
-					if (guardBusy()) return;
-					fn();
-				}
-			}, l);
-		}
+		btnStart.addEventListener('click', function() {
+			runAction('start', callStart, 'Запущено', 'Запуск службы и ожидание готовности SOCKS5…');
+		});
+
+		btnStop.addEventListener('click', function() {
+			runAction('stop', callStop, 'Остановлено', 'Остановка службы и процессов…');
+		});
+
+		btnProbe.addEventListener('click', function() {
+			runAction('probe', callProbe, 'Проверено', null);
+		});
+
+		btnScan.addEventListener('click', function() {
+			runAction('scan', callScan, 'Автоподбор запущен', 'Запуск автоподбора по пингу…');
+		});
+
+		btnUninstall.addEventListener('click', function() {
+			if (guardBusy()) return;
+			if (!confirm('Удалить OWRTPsiphon, бинарник warp-plus, кэш и настройки?')) return;
+			if (!confirm('Подтвердите полное удаление (Steer и Zapret не пострадают).')) return;
+			busy = true;
+			pendingAction = 'uninstall';
+			syncButtons();
+			callUninstall().then(function(r) {
+				notify((r && r.message) || 'Удалено', 'warning');
+				window.setTimeout(function() { window.location.href = '/cgi-bin/luci/'; }, 2500);
+			}, function(e) {
+				busy = false;
+				pendingAction = '';
+				syncButtons();
+				notify('Ошибка: ' + e, 'error');
+			});
+		});
 
 		function saveAuto(revertFn) {
 			if (guardBusy()) {
@@ -1376,6 +1701,7 @@ return view.extend({
 			var wh = selWatchdog.value || '0';
 			var sb = (wh === 'boot') ? '1' : '0';
 			busy = true;
+			syncButtons();
 			callSetAuto(
 				chkAutostart.checked ? '1' : '0',
 				sb,
@@ -1386,6 +1712,7 @@ return view.extend({
 				return updateStatus();
 			}, function(e) {
 				busy = false;
+				syncButtons();
 				notify('Ошибка RPC: ' + e, 'error');
 			});
 		}
@@ -1405,14 +1732,19 @@ return view.extend({
 		root.appendChild(E('style', {},
 			'.owrt-psiphon-country-wrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:100%;}' +
 			'.owrt-psiphon-country-select{min-width:340px;max-width:100%;width:auto;font-size:14px;}' +
+			'.owrt-act-btn{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;}' +
+			'.owrt-inline-load{display:inline-flex;align-items:center;gap:6px;}' +
+			'.owrt-live-line{align-items:center;gap:8px;margin:10px 0;padding:8px 12px;border-radius:4px;background:#f8fafc;border-left:3px solid #2563eb;font-size:13px;color:#1e293b;}' +
+			'.owrt-spinner{display:inline-block;width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:owrtSpin .7s linear infinite;flex-shrink:0;}' +
+			'@keyframes owrtSpin{to{transform:rotate(360deg);}}' +
 			'@media(max-width:600px){.owrt-psiphon-country-wrap{display:flex;flex-direction:column;align-items:stretch;width:100%;}' +
 			'.owrt-psiphon-country-select{display:block;width:100%;min-width:0;max-width:100%;}' +
-			'.owrt-psiphon-country-wrap .btn{width:100%;margin:0!important;}}'
+			'.owrt-psiphon-country-wrap .btn{width:100%;margin:0!important;justify-content:center;}}'
 		));
 		root.appendChild(E('h2', {}, 'OWRTPsiphon'));
 		root.appendChild(E('p', {}, 'Управление Psiphon (bepass-org/warp-plus --cfon) для Steer без изменения сетевой конфигурации.'));
 		root.appendChild(stateTable);
-		root.appendChild(scanBox);
+		root.appendChild(liveLine);
 
 		root.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, 'Автоматизация и контроль узлов'),
@@ -1432,21 +1764,10 @@ return view.extend({
 		root.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, 'Управление и обновления'),
 			E('div', { 'style': 'margin-bottom:10px' }, [
-				btn('Запустить', 'cbi-button-positive', function() { action(callStart(), 'Запущено'); }),
-				btn('Остановить', 'cbi-button-negative', function() { action(callStop(), 'Остановлено'); }),
-				btn('Проверить SOCKS', 'cbi-button', function() { action(callProbe(), 'Проверено'); }),
-				btn('Удалить приложение', 'cbi-button-negative', function() {
-					if (!confirm('Удалить OWRTPsiphon, бинарник warp-plus, кэш и настройки?')) return;
-					if (!confirm('Подтвердите полное удаление (Steer и Zapret не пострадают).')) return;
-					busy = true;
-					callUninstall().then(function(r) {
-						notify((r && r.message) || 'Удалено', 'warning');
-						window.setTimeout(function() { window.location.href = '/cgi-bin/luci/'; }, 2500);
-					}, function(e) {
-						busy = false;
-						notify('Ошибка: ' + e, 'error');
-					});
-				})
+				btnStart,
+				btnStop,
+				btnProbe,
+				btnUninstall
 			]),
 			E('div', { 'class': 'table' }, [
 				E('div', { 'class': 'tr' }, [
@@ -1460,9 +1781,11 @@ return view.extend({
 								'click': function() {
 									if (guardBusy()) return;
 									busy = true;
+									syncButtons();
 									appUpdStatus.textContent = 'Проверка GitHub…';
 									callCheckUpdate().then(function(r) {
 										busy = false;
+										syncButtons();
 										appUpdStatus.textContent = '';
 										if (!r || !r.ok) {
 											appUpdStatus.textContent = (r && r.message) || 'Ошибка проверки';
@@ -1477,6 +1800,7 @@ return view.extend({
 													if (guardBusy()) return;
 													if (!confirm('Установить обновление v' + r.remote_version + '?')) return;
 													busy = true;
+													syncButtons();
 													appUpdStatus.textContent = 'Установка обновления…';
 													callApplyUpdate().then(function(res) {
 														notify((res && res.message) || 'Обновление…', (res && res.ok) ? 'info' : 'error');
@@ -1486,9 +1810,11 @@ return view.extend({
 															}, 6000);
 														} else {
 															busy = false;
+															syncButtons();
 														}
 													}, function(err) {
 														busy = false;
+														syncButtons();
 														notify('Ошибка: ' + err, 'error');
 													});
 												}
@@ -1496,6 +1822,7 @@ return view.extend({
 										}
 									}, function(e) {
 										busy = false;
+										syncButtons();
 										appUpdStatus.textContent = 'Ошибка запроса: ' + e;
 									});
 								}
@@ -1515,9 +1842,11 @@ return view.extend({
 								'click': function() {
 									if (guardBusy()) return;
 									busy = true;
+									syncButtons();
 									warpUpdStatus.textContent = 'Проверка GitHub…';
 									callCheckWarpUpdate().then(function(r) {
 										busy = false;
+										syncButtons();
 										warpUpdStatus.textContent = '';
 										if (!r || !r.ok) {
 											warpUpdStatus.textContent = (r && r.message) || 'Ошибка проверки';
@@ -1532,14 +1861,17 @@ return view.extend({
 													if (guardBusy()) return;
 													if (!confirm('Обновить warp-plus до v' + r.remote_version + '?')) return;
 													busy = true;
+													syncButtons();
 													warpUpdStatus.textContent = 'Загрузка и обновление warp-plus…';
 													callApplyWarpUpdate().then(function(res) {
 														busy = false;
+														syncButtons();
 														notify((res && res.message) || 'Готово', (res && res.ok) ? 'info' : 'error');
 														warpUpdStatus.textContent = (res && res.message) || '';
 														return updateStatus();
 													}, function(err) {
 														busy = false;
+														syncButtons();
 														notify('Ошибка: ' + err, 'error');
 													});
 												}
@@ -1547,6 +1879,7 @@ return view.extend({
 										}
 									}, function(e) {
 										busy = false;
+										syncButtons();
 										warpUpdStatus.textContent = 'Ошибка запроса: ' + e;
 									});
 								}
